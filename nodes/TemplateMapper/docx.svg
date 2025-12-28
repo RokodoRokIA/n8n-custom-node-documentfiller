@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <path fill="#2196F3" d="M6 6h28l8 8v28c0 1.1-.9 2-2 2H6c-1.1 0-2-.9-2-2V8c0-1.1.9-2 2-2z"/>
+  <path fill="#1565C0" d="M34 6l8 8h-6c-1.1 0-2-.9-2-2V6z"/>
+  <text x="24" y="32" text-anchor="middle" fill="white" font-family="Arial" font-size="10" font-weight="bold">DOCX</text>
+</svg>

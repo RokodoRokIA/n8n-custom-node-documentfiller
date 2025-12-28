@@ -1,0 +1,57 @@
+{
+  "name": "n8n-nodes-docx-filler",
+  "version": "5.0.0",
+  "description": "Nodes n8n pour créer et remplir des templates DOCX avec des tags {{TAG}}. TemplateMapper (insertion IA) + DocxTemplateFiller (remplissage).",
+  "keywords": [
+    "n8n-community-node-package",
+    "n8n",
+    "n8n-node",
+    "docx",
+    "template",
+    "fill",
+    "tags",
+    "document",
+    "automation",
+    "ai",
+    "llm",
+    "langchain"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/rokodo-io/n8n-nodes-docx-filler",
+  "author": {
+    "name": "Rokodo",
+    "email": "contact@rokodo.io"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rokodo-io/n8n-nodes-docx-filler.git"
+  },
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc && gulp build:icons",
+    "dev": "tsc --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "files": [
+    "dist"
+  ],
+  "n8n": {
+    "n8nNodesApiVersion": 1,
+    "nodes": [
+      "dist/DocxTemplateFiller/DocxTemplateFiller.node.js",
+      "dist/TemplateMapper/TemplateMapper.node.js"
+    ]
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "gulp": "^4.0.2",
+    "n8n-workflow": "^1.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "pizzip": "^3.1.7"
+  },
+  "peerDependencies": {
+    "n8n-workflow": "*"
+  }
+}

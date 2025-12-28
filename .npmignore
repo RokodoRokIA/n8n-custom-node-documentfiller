@@ -1,0 +1,32 @@
+# Source files (only dist is published)
+nodes/
+*.ts
+!*.d.ts
+
+# Config files
+tsconfig.json
+gulpfile.js
+.eslintrc.js
+.prettierrc
+
+# Dev files
+.git/
+.github/
+*.tgz
+.claude/
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+# Test files
+test/
+__tests__/
+*.test.ts
+coverage/
+*.docx
+temp_*/
+
+# Scripts
+insert-tags.ts
