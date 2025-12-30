@@ -1,14 +1,16 @@
 /**
  * TemplateMapper - Création intelligente de templates via IA
  *
- * NOUVELLE APPROCHE:
- * 1. L'utilisateur fournit un document vierge (formulaire à remplir)
- * 2. L'utilisateur fournit une structure JSON décrivant les champs de données
- * 3. L'IA analyse le document et déduit où placer chaque tag {{TAG}}
- * 4. Le document avec tags est prêt pour DocxTemplateFiller
+ * Ce nœud analyse un document vierge et une structure de données JSON,
+ * puis utilise l'IA pour déduire où placer chaque tag {{TAG}} dans le document.
  *
- * Workflow:
- * TemplateMapper (crée le template) → DocxTemplateFiller (remplit avec données)
+ * Workflow complémentaire avec DocxTemplateFiller :
+ * 1. TemplateMapper : Crée le template + génère la structure de données exacte
+ * 2. DocxTemplateFiller : Remplit le template avec les valeurs réelles
+ *
+ * Sorties :
+ * - Document DOCX avec les tags {{TAG}} insérés aux bons emplacements
+ * - dataStructure : Structure JSON exacte à remplir pour DocxTemplateFiller
  */
 import { IExecuteFunctions, INodeExecutionData, INodeType, INodeTypeDescription } from 'n8n-workflow';
 export declare class TemplateMapper implements INodeType {

@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-docx-filler",
-  "version": "5.0.0",
+  "version": "5.1.0",
   "description": "Nodes n8n pour créer et remplir des templates DOCX avec des tags {{TAG}}. TemplateMapper (insertion IA) + DocxTemplateFiller (remplissage).",
   "keywords": [
     "n8n-community-node-package",

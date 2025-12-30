@@ -1,14 +1,16 @@
 /**
  * TemplateMapper - Création intelligente de templates via IA
  *
- * NOUVELLE APPROCHE:
- * 1. L'utilisateur fournit un document vierge (formulaire à remplir)
- * 2. L'utilisateur fournit une structure JSON décrivant les champs de données
- * 3. L'IA analyse le document et déduit où placer chaque tag {{TAG}}
- * 4. Le document avec tags est prêt pour DocxTemplateFiller
+ * Ce nœud analyse un document vierge et une structure de données JSON,
+ * puis utilise l'IA pour déduire où placer chaque tag {{TAG}} dans le document.
  *
- * Workflow:
- * TemplateMapper (crée le template) → DocxTemplateFiller (remplit avec données)
+ * Workflow complémentaire avec DocxTemplateFiller :
+ * 1. TemplateMapper : Crée le template + génère la structure de données exacte
+ * 2. DocxTemplateFiller : Remplit le template avec les valeurs réelles
+ *
+ * Sorties :
+ * - Document DOCX avec les tags {{TAG}} insérés aux bons emplacements
+ * - dataStructure : Structure JSON exacte à remplir pour DocxTemplateFiller
  */
 
 import {
@@ -149,46 +151,64 @@ function extractParagraphs(xml: string): Array<{
 }
 
 /**
- * Aplatit un objet JSON pour extraire toutes les clés (champs)
+ * Aplatit un objet JSON pour extraire toutes les clés (champs) avec leurs chemins complets
+ * Retourne un tableau d'objets { key, path, tag }
  */
-function flattenJsonKeys(obj: Record<string, unknown>, prefix = ''): string[] {
-	const keys: string[] = [];
+function flattenJsonStructure(
+	obj: Record<string, unknown>,
+	prefix = '',
+): Array<{ key: string; path: string; tag: string }> {
+	const fields: Array<{ key: string; path: string; tag: string }> = [];
 
 	for (const [key, value] of Object.entries(obj)) {
 		const path = prefix ? `${prefix}.${key}` : key;
+		const tag = path.replace(/\./g, '_').toUpperCase();
 
 		if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
-			keys.push(...flattenJsonKeys(value as Record<string, unknown>, path));
+			fields.push(...flattenJsonStructure(value as Record<string, unknown>, path));
 		} else {
-			keys.push(key); // On garde juste le nom du champ, pas le chemin complet
+			fields.push({ key, path, tag });
 		}
 	}
 
-	return [...new Set(keys)]; // Dédupliquer
+	return fields;
 }
 
 /**
- * Construit le prompt pour l'IA - NOUVELLE APPROCHE
+ * Génère la structure de données exacte pour DocxTemplateFiller
+ * Crée un objet avec les tags comme clés et des valeurs vides
+ */
+function generateDataStructure(
+	insertedTags: string[],
+): Record<string, string> {
+	const structure: Record<string, string> = {};
+	for (const tag of insertedTags) {
+		structure[tag] = '';
+	}
+	return structure;
+}
+
+/**
+ * Construit le prompt pour l'IA
  * L'IA déduit où placer les tags basé sur la sémantique des clés JSON
  */
 function buildDeductionPrompt(
-	fields: string[],
+	fields: Array<{ key: string; path: string; tag: string }>,
 	paragraphs: Array<{ index: number; text: string }>,
-	documentType: string,
 ): string {
-	const fieldsInfo = fields.map((f) => `- {{${f.toUpperCase()}}}`).join('\n');
-
-	const paragraphsInfo = paragraphs
-		.filter((p) => p.text.length > 5)
-		.slice(0, 150)
-		.map((p) => `[${p.index}] "${p.text.substring(0, 200)}"`)
+	const fieldsInfo = fields
+		.map((f) => `- {{${f.tag}}} (champ: ${f.key}, chemin: ${f.path})`)
 		.join('\n');
 
-	return `Tu es un expert en analyse de documents administratifs français (DC1, DC2, AE, ATTRI1, formulaires CERFA).
+	const paragraphsInfo = paragraphs
+		.filter((p) => p.text.length > 3)
+		.slice(0, 200)
+		.map((p) => `[${p.index}] "${p.text.substring(0, 250)}"`)
+		.join('\n');
+
+	return `Tu es un expert en analyse de documents administratifs et formulaires.
 
 MISSION: Analyser un document vierge et identifier où placer des tags pour le pré-remplissage automatique.
-
-TYPE DE DOCUMENT: ${documentType}
 
 CHAMPS À PLACER (basés sur la structure de données fournie):
 ${fieldsInfo}
@@ -199,13 +219,14 @@ ${paragraphsInfo}
 INSTRUCTIONS:
 1. Pour chaque champ, trouve le paragraphe où la VALEUR correspondante doit être insérée
 2. Utilise la sémantique des noms de champs pour déduire les correspondances:
-   - "nom_commercial" → paragraphe contenant "Dénomination", "Nom commercial", "Raison sociale"
-   - "siret" → paragraphe contenant "SIRET", "N° SIRET", "Numéro SIRET"
-   - "adresse" → paragraphe contenant "Adresse", "Siège", "Établissement"
-   - "email" → paragraphe contenant "Mail", "Courriel", "Électronique"
-   - "telephone" → paragraphe contenant "Téléphone", "Tél", "N°"
+   - "nom_commercial", "nom", "raison_sociale" → paragraphe contenant "Dénomination", "Nom", "Raison sociale"
+   - "siret", "siren" → paragraphe contenant "SIRET", "N° SIRET", "Numéro SIRET"
+   - "adresse", "adresse_siege" → paragraphe contenant "Adresse", "Siège", "Établissement"
+   - "email", "mail" → paragraphe contenant "Mail", "Courriel", "Électronique", "@"
+   - "telephone", "tel" → paragraphe contenant "Téléphone", "Tél", "N°"
+   - "date" → paragraphe contenant "Date", "Le", "Fait à"
    - etc.
-3. Si le paragraphe contient "...", "[...]", ou un espace à remplir, utilise "replaceText"
+3. Si le paragraphe contient "...", "[...]", "____", ou un espace à remplir, utilise "replaceText"
 4. Sinon, utilise "insertAfter" avec le label qui précède la zone à remplir
 
 RÉPONDS UNIQUEMENT avec un JSON valide:
@@ -230,8 +251,9 @@ RÉPONDS UNIQUEMENT avec un JSON valide:
 
 IMPORTANT:
 - Chaque champ doit avoir un seul mapping vers le paragraphe le plus approprié
-- Le "tag" doit être le nom du champ en MAJUSCULES avec underscores
-- La "confidence" est un score de 0 à 100`;
+- Le "tag" doit correspondre exactement à ceux listés ci-dessus
+- La "confidence" est un score de 0 à 100
+- Ne force pas un mapping si tu n'es pas sûr (confidence < 50)`;
 }
 
 /**
@@ -330,7 +352,7 @@ function insertTagsInXml(
 			}
 		}
 
-		// Stratégie 3: Ajouter à la fin du paragraphe
+		// Stratégie 3: Ajouter à la fin du paragraphe si confiance suffisante
 		if (!inserted && mapping.confidence >= 70) {
 			const lastTEnd = newParagraph.lastIndexOf('</w:t>');
 			if (lastTEnd !== -1) {
@@ -363,7 +385,7 @@ function insertTagsInXml(
 			tag: mapping.tag,
 			paragraphIndex: mapping.paragraphIndex,
 			inserted,
-			reason: inserted ? 'OK' : 'Position non trouvée',
+			reason: inserted ? 'OK' : 'Position non trouvée dans le paragraphe',
 		});
 	}
 
@@ -380,10 +402,10 @@ export class TemplateMapper implements INodeType {
 		name: 'templateMapper',
 		icon: 'file:docx.svg',
 		group: ['transform'],
-		version: 2,
-		subtitle: '🤖 IA déduit les emplacements des tags',
+		version: 3,
+		subtitle: 'IA déduit les emplacements des {{TAGS}}',
 		description:
-			'Analyse un document vierge et une structure JSON, puis utilise l\'IA pour déduire où placer les tags {{TAG}} basé sur la sémantique des champs.',
+			'Analyse un document vierge et une structure JSON, puis utilise l\'IA pour placer automatiquement les tags {{TAG}}. Génère également la structure de données exacte pour DocxTemplateFiller.',
 		defaults: {
 			name: 'Template Mapper',
 		},
@@ -400,13 +422,13 @@ export class TemplateMapper implements INodeType {
 		properties: [
 			// ==================== Document à analyser ====================
 			{
-				displayName: 'Document à Analyser',
+				displayName: 'Document Vierge',
 				name: 'documentProperty',
 				type: 'string',
 				default: 'data',
 				required: true,
 				description:
-					'Propriété binaire contenant le document vierge (formulaire à pré-remplir)',
+					'Nom de la propriété binaire contenant le document DOCX vierge à analyser. Ce document sera transformé en template avec des tags {{TAG}} aux emplacements appropriés.',
 			},
 
 			// ==================== Structure JSON ====================
@@ -415,39 +437,26 @@ export class TemplateMapper implements INodeType {
 				name: 'dataStructure',
 				type: 'json',
 				default: `{
-  "entreprise": {
-    "nom_commercial": "",
-    "siret": "",
-    "adresse": "",
-    "email": "",
-    "telephone": ""
-  },
-  "signataire": {
+  "client": {
     "nom": "",
     "prenom": "",
-    "qualite": ""
+    "email": "",
+    "telephone": "",
+    "adresse": ""
+  },
+  "commande": {
+    "numero": "",
+    "date": "",
+    "montant": ""
+  },
+  "signature": {
+    "lieu": "",
+    "date": ""
   }
 }`,
 				required: true,
 				description:
-					'Structure JSON décrivant les champs de données. L\'IA utilisera les noms des clés pour déduire où placer les tags.',
-			},
-
-			// ==================== Type de document ====================
-			{
-				displayName: 'Type de Document',
-				name: 'documentType',
-				type: 'options',
-				options: [
-					{ name: 'DC1 - Lettre de Candidature', value: 'DC1' },
-					{ name: 'DC2 - Déclaration du Candidat', value: 'DC2' },
-					{ name: 'AE - Acte d\'Engagement', value: 'AE' },
-					{ name: 'ATTRI1 - Attribution', value: 'ATTRI1' },
-					{ name: 'CERFA', value: 'CERFA' },
-					{ name: 'Autre Document', value: 'autre' },
-				],
-				default: 'DC1',
-				description: 'Type de document pour aider l\'IA',
+					'Structure JSON décrivant les champs à insérer dans le document. Les clés sont converties en tags (ex: client.nom → {{CLIENT_NOM}}). L\'IA utilise la sémantique des noms pour trouver les bons emplacements.',
 			},
 
 			// ==================== Options ====================
@@ -463,24 +472,29 @@ export class TemplateMapper implements INodeType {
 						name: 'confidenceThreshold',
 						type: 'number',
 						default: 70,
+						typeOptions: {
+							minValue: 0,
+							maxValue: 100,
+						},
 						description:
-							'Seuil minimum de confiance pour insérer un tag (0-100)',
+							'Score minimum de confiance (0-100) pour qu\'un tag soit inséré. Plus le seuil est élevé, moins de tags seront placés mais avec plus de précision.',
 					},
 					{
-						displayName: 'Nom Fichier Sortie',
+						displayName: 'Nom du Fichier de Sortie',
 						name: 'outputFilename',
 						type: 'string',
 						default: '',
+						placeholder: 'ex: template_entreprise.docx',
 						description:
-							'Nom du fichier de sortie. Vide = basé sur le document source.',
+							'Nom du fichier template généré. Si vide, utilise le nom du fichier source avec suffixe "_TEMPLATE".',
 					},
 					{
-						displayName: 'Inclure Détails',
+						displayName: 'Inclure les Détails du Mapping',
 						name: 'includeDetails',
 						type: 'boolean',
 						default: false,
 						description:
-							'Inclure les détails du mapping dans la sortie JSON',
+							'Inclut dans la sortie JSON les détails complets du mapping (positions, scores de confiance, etc.) pour le débogage.',
 					},
 				],
 			},
@@ -499,14 +513,14 @@ export class TemplateMapper implements INodeType {
 		} catch {
 			throw new NodeOperationError(
 				this.getNode(),
-				'Un modèle LLM est requis. Connectez un modèle (OpenAI, Claude, Ollama...) à l\'entrée "Model".',
+				'Un modèle LLM est requis. Connectez un modèle (OpenAI, Claude, Ollama, Gemini...) à l\'entrée "Model".',
 			);
 		}
 
 		if (!llm) {
 			throw new NodeOperationError(
 				this.getNode(),
-				'Un modèle LLM est requis. Connectez un modèle (OpenAI, Claude, Ollama...) à l\'entrée "Model".',
+				'Un modèle LLM est requis. Connectez un modèle (OpenAI, Claude, Ollama, Gemini...) à l\'entrée "Model".',
 			);
 		}
 
@@ -524,7 +538,6 @@ export class TemplateMapper implements INodeType {
 					'dataStructure',
 					i,
 				) as string | object;
-				const documentType = this.getNodeParameter('documentType', i) as string;
 				const options = this.getNodeParameter('options', i) as {
 					confidenceThreshold?: number;
 					outputFilename?: string;
@@ -542,7 +555,7 @@ export class TemplateMapper implements INodeType {
 					} catch {
 						throw new NodeOperationError(
 							this.getNode(),
-							'Structure de données JSON invalide',
+							'Structure de données JSON invalide. Vérifiez la syntaxe JSON.',
 							{ itemIndex: i },
 						);
 					}
@@ -558,7 +571,7 @@ export class TemplateMapper implements INodeType {
 				if (!binaryData || !binaryData[documentProperty]) {
 					throw new NodeOperationError(
 						this.getNode(),
-						`Aucun document trouvé dans "${documentProperty}"`,
+						`Aucun document trouvé dans la propriété binaire "${documentProperty}". Assurez-vous qu'un document DOCX est connecté en entrée.`,
 						{ itemIndex: i },
 					);
 				}
@@ -569,14 +582,25 @@ export class TemplateMapper implements INodeType {
 				);
 				const documentFilename =
 					binaryData[documentProperty].fileName || 'document.docx';
-				const documentZip = new PizZip(documentBuffer);
+
+				let documentZip: PizZip;
+				try {
+					documentZip = new PizZip(documentBuffer);
+				} catch {
+					throw new NodeOperationError(
+						this.getNode(),
+						'Le fichier fourni n\'est pas un document DOCX valide.',
+						{ itemIndex: i },
+					);
+				}
+
 				const documentXml =
 					documentZip.file('word/document.xml')?.asText() || '';
 
 				if (!documentXml || documentXml.length < 100) {
 					throw new NodeOperationError(
 						this.getNode(),
-						'Document invalide ou vide',
+						'Document DOCX invalide ou vide.',
 						{ itemIndex: i },
 					);
 				}
@@ -585,12 +609,12 @@ export class TemplateMapper implements INodeType {
 				// Extraire les champs de la structure JSON
 				// ============================================================
 
-				const fields = flattenJsonKeys(dataStructure);
+				const fields = flattenJsonStructure(dataStructure);
 
 				if (fields.length === 0) {
 					throw new NodeOperationError(
 						this.getNode(),
-						'Aucun champ trouvé dans la structure de données',
+						'Aucun champ trouvé dans la structure de données. Ajoutez au moins un champ à mapper.',
 						{ itemIndex: i },
 					);
 				}
@@ -605,7 +629,7 @@ export class TemplateMapper implements INodeType {
 				// Appeler l'IA pour déduire les emplacements
 				// ============================================================
 
-				const prompt = buildDeductionPrompt(fields, paragraphs, documentType);
+				const prompt = buildDeductionPrompt(fields, paragraphs);
 				const response = await llm.invoke(prompt);
 				const aiMappings = parseLLMResponse(response);
 
@@ -635,7 +659,12 @@ export class TemplateMapper implements INodeType {
 				// Préparer la sortie
 				// ============================================================
 
-				const insertedCount = results.filter((r) => r.inserted).length;
+				const insertedTags = results.filter((r) => r.inserted).map((r) => r.tag);
+				const failedTags = results.filter((r) => !r.inserted).map((r) => r.tag);
+
+				// Générer la structure de données exacte pour DocxTemplateFiller
+				const templateDataStructure = generateDataStructure(insertedTags);
+
 				const finalFilename =
 					options.outputFilename ||
 					documentFilename.replace('.docx', '_TEMPLATE.docx');
@@ -646,19 +675,36 @@ export class TemplateMapper implements INodeType {
 					'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 				);
 
-				const jsonOutput = {
+				// JSON de sortie avec la structure de données pour DocxTemplateFiller
+				const jsonOutput: {
+					success: boolean;
+					sourceFilename: string;
+					outputFilename: string;
+					fieldsProvided: number;
+					tagsInserted: number;
+					tagsFailed: number;
+					insertedTags: string[];
+					failedTags: string[];
+					dataStructure: Record<string, string>;
+					mappingDetails?: MappingResult[];
+					aiMappings?: FieldMapping[];
+				} = {
 					success: true,
-					documentType,
 					sourceFilename: documentFilename,
 					outputFilename: finalFilename,
-					fieldsInSchema: fields.length,
-					tagsInserted: insertedCount,
-					tagsFailed: fields.length - insertedCount,
-					insertedTags: results.filter((r) => r.inserted).map((r) => r.tag),
-					failedTags: results.filter((r) => !r.inserted).map((r) => r.tag),
-					mappingDetails: includeDetails ? results : undefined,
-					aiMappings: includeDetails ? aiMappings : undefined,
+					fieldsProvided: fields.length,
+					tagsInserted: insertedTags.length,
+					tagsFailed: failedTags.length,
+					insertedTags,
+					failedTags,
+					// Structure exacte pour DocxTemplateFiller
+					dataStructure: templateDataStructure,
 				};
+
+				if (includeDetails) {
+					jsonOutput.mappingDetails = results;
+					jsonOutput.aiMappings = aiMappings;
+				}
 
 				returnData.push({
 					json: jsonOutput,

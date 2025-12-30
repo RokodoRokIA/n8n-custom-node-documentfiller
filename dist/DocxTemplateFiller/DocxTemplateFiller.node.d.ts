@@ -1,19 +1,20 @@
 /**
- * DocxTemplateFiller - Remplissage intelligent de documents DOCX
+ * DocxTemplateFiller - Remplissage factuel de documents DOCX
  *
- * Trois modes de fonctionnement:
- * 1. Mode Standard: Mapping fixe basé sur le schéma TagsSchema (rapide, gratuit)
- * 2. Mode IA (LLM): Mapping dynamique avec n'importe quel modèle LLM connecté
- * 3. Mode Hybride: Standard d'abord, puis IA pour les tags non reconnus
+ * Ce nœud remplace les tags {{TAG}} dans un document DOCX par les valeurs
+ * correspondantes fournies dans le JSON d'entrée.
  *
- * Le mode IA utilise l'input ai_languageModel de n8n, permettant de connecter:
- * - OpenAI (GPT-4, GPT-4o, GPT-3.5)
- * - Anthropic (Claude)
- * - Ollama (modèles locaux)
- * - Azure OpenAI
- * - Google (Gemini)
- * - Mistral
- * - Et tout autre LLM compatible LangChain
+ * Logique simple et agnostique :
+ * - Le document contient des placeholders au format {{NOM_DU_TAG}}
+ * - Le JSON d'entrée contient les mêmes clés avec leurs valeurs
+ * - Chaque {{TAG}} est remplacé par sa valeur correspondante
+ *
+ * Ce nœud est conçu pour fonctionner avec TemplateMapper qui génère :
+ * 1. Le document DOCX avec les tags insérés
+ * 2. La structure de données exacte à remplir (dataStructure)
+ *
+ * Workflow typique :
+ * TemplateMapper (crée template + structure) → DocxTemplateFiller (remplit les valeurs)
  */
 import { IExecuteFunctions, INodeExecutionData, INodeType, INodeTypeDescription } from 'n8n-workflow';
 export declare class DocxTemplateFiller implements INodeType {

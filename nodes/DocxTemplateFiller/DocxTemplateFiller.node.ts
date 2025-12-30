@@ -1,19 +1,20 @@
 /**
- * DocxTemplateFiller - Remplissage intelligent de documents DOCX
+ * DocxTemplateFiller - Remplissage factuel de documents DOCX
  *
- * Trois modes de fonctionnement:
- * 1. Mode Standard: Mapping fixe basé sur le schéma TagsSchema (rapide, gratuit)
- * 2. Mode IA (LLM): Mapping dynamique avec n'importe quel modèle LLM connecté
- * 3. Mode Hybride: Standard d'abord, puis IA pour les tags non reconnus
+ * Ce nœud remplace les tags {{TAG}} dans un document DOCX par les valeurs
+ * correspondantes fournies dans le JSON d'entrée.
  *
- * Le mode IA utilise l'input ai_languageModel de n8n, permettant de connecter:
- * - OpenAI (GPT-4, GPT-4o, GPT-3.5)
- * - Anthropic (Claude)
- * - Ollama (modèles locaux)
- * - Azure OpenAI
- * - Google (Gemini)
- * - Mistral
- * - Et tout autre LLM compatible LangChain
+ * Logique simple et agnostique :
+ * - Le document contient des placeholders au format {{NOM_DU_TAG}}
+ * - Le JSON d'entrée contient les mêmes clés avec leurs valeurs
+ * - Chaque {{TAG}} est remplacé par sa valeur correspondante
+ *
+ * Ce nœud est conçu pour fonctionner avec TemplateMapper qui génère :
+ * 1. Le document DOCX avec les tags insérés
+ * 2. La structure de données exacte à remplir (dataStructure)
+ *
+ * Workflow typique :
+ * TemplateMapper (crée template + structure) → DocxTemplateFiller (remplit les valeurs)
  */
 
 import {
@@ -26,22 +27,11 @@ import {
 
 import PizZip from 'pizzip';
 
-import { mapDataToTags } from '../shared/TagsSchema';
-
 // ============================================================================
 // Types
 // ============================================================================
 
-type MappingMode = 'standard' | 'ai' | 'hybrid';
 type CheckboxStyle = 'unicode' | 'text' | 'boolean';
-
-interface AIMapping {
-	[tagName: string]: {
-		value: string;
-		confidence: number;
-		source: string;
-	};
-}
 
 // ============================================================================
 // Utility Functions
@@ -49,36 +39,51 @@ interface AIMapping {
 
 /**
  * Extrait tous les tags {{TAG}} d'un document XML
+ * Format supporté : {{TAG_NAME}} où TAG_NAME contient lettres majuscules, chiffres et underscores
  */
 function extractTagsFromXml(xml: string): string[] {
 	const allTags = xml.match(/\{\{[A-Z_0-9]+\}\}/gi) || [];
-	return [...new Set(allTags.map(t => t.replace(/[{}]/g, '')))];
+	return [...new Set(allTags.map((t) => t.replace(/[{}]/g, '')))];
 }
 
 /**
- * Aplatit un objet JSON en chemins dotted
- * { a: { b: 1 } } → { "a.b": 1 }
+ * Aplatit un objet JSON imbriqué en un objet plat avec les clés en majuscules
+ * { entreprise: { nom: "Test" } } → { "ENTREPRISE_NOM": "Test" }
+ *
+ * Supporte également les clés déjà au bon format (ex: NOM_COMMERCIAL)
  */
-function flattenJson(obj: Record<string, unknown>, prefix = ''): Record<string, string> {
+function flattenJsonToTags(
+	obj: Record<string, unknown>,
+	prefix = '',
+): Record<string, string> {
 	const result: Record<string, string> = {};
 
 	for (const [key, value] of Object.entries(obj)) {
-		const path = prefix ? `${prefix}.${key}` : key;
+		// Construire la clé : soit avec préfixe, soit juste la clé
+		const tagKey = prefix
+			? `${prefix}_${key}`.toUpperCase()
+			: key.toUpperCase();
 
 		if (value === null || value === undefined) {
 			continue;
 		} else if (typeof value === 'object' && !Array.isArray(value)) {
-			Object.assign(result, flattenJson(value as Record<string, unknown>, path));
+			// Récursion pour les objets imbriqués
+			Object.assign(
+				result,
+				flattenJsonToTags(value as Record<string, unknown>, tagKey),
+			);
 		} else if (Array.isArray(value)) {
-			value.forEach((item, idx) => {
-				if (typeof item === 'object') {
-					Object.assign(result, flattenJson(item as Record<string, unknown>, `${path}[${idx}]`));
-				} else {
-					result[`${path}[${idx}]`] = String(item);
-				}
-			});
+			// Pour les tableaux, joindre les éléments
+			result[tagKey] = value
+				.map((item) =>
+					typeof item === 'object' ? JSON.stringify(item) : String(item),
+				)
+				.join(', ');
+		} else if (typeof value === 'boolean') {
+			// Les booléens sont convertis pour les checkboxes
+			result[tagKey] = value ? '☑' : '☐';
 		} else {
-			result[path] = String(value);
+			result[tagKey] = String(value);
 		}
 	}
 
@@ -86,117 +91,43 @@ function flattenJson(obj: Record<string, unknown>, prefix = ''): Record<string, 
 }
 
 /**
- * Prépare les données avec le schéma standard
+ * Ajuste le style des checkboxes selon la préférence utilisateur
  */
-function prepareStandardData(
-	rawData: Record<string, unknown>,
-	documentType: string,
+function adjustCheckboxStyle(
+	data: Record<string, string>,
+	style: CheckboxStyle,
 ): Record<string, string> {
-	const result = mapDataToTags(rawData);
+	if (style === 'unicode') return data;
 
-	// Tags spécifiques DC2
-	if (documentType === 'dc2') {
-		const registre = rawData.registre_professionnel as Record<string, unknown> | undefined;
-		const certifications = (registre?.certifications as string[]) || [];
-		const ca = rawData.chiffres_affaires as Record<string, unknown> | undefined;
-
-		result.CERTIFICATION_1 = certifications[0] || '';
-		result.CERTIFICATION_2 = certifications[1] || '';
-		result.CERTIFICATION_3 = certifications[2] || '';
-		result.CERTIFICATION_4 = certifications[3] || '';
-		result.PART_CA_PERCENT = (ca?.part_ca_percent as string) || '';
-	}
-
-	return result;
-}
-
-/**
- * Construit le prompt pour le mapping IA
- */
-function buildMappingPrompt(tags: string[], jsonData: Record<string, string>, context: string): string {
-	return `Tu es un assistant spécialisé dans le remplissage de documents administratifs français (marchés publics).
-
-CONTEXTE: ${context || 'Document administratif à remplir'}
-
-TAGS À REMPLIR (ce sont des placeholders dans le document):
-${tags.map(t => `- {{${t}}}`).join('\n')}
-
-DONNÉES DISPONIBLES (format: chemin.vers.donnée = valeur):
-${Object.entries(jsonData).slice(0, 100).map(([k, v]) => `- ${k} = "${v}"`).join('\n')}
-
-INSTRUCTIONS:
-1. Pour chaque tag, trouve la donnée la plus appropriée sémantiquement
-2. Utilise ton intelligence pour comprendre les correspondances:
-   - NOM_COMMERCIAL ↔ entreprise.nom_commercial
-   - SIRET ↔ entreprise.siret
-   - RAISON_SOCIALE ↔ entreprise.denomination_sociale
-   - ADRESSE ↔ entreprise.adresse
-   - etc.
-3. Pour les checkboxes (CHECK_*), retourne "☑" si la valeur est true/oui, "☐" si false/non
-4. Si aucune donnée ne correspond, retourne une chaîne vide ""
-5. Formate les valeurs correctement (dates en français, montants avec €, etc.)
-
-RÉPONDS UNIQUEMENT avec un JSON valide au format:
-{
-  "mappings": {
-    "TAG_NAME": { "value": "valeur à insérer", "confidence": 0.95, "source": "chemin.donnée" },
-    "AUTRE_TAG": { "value": "", "confidence": 0, "source": "" }
-  }
-}`;
-}
-
-/**
- * Parse la réponse LLM pour extraire le mapping
- */
-function parseLLMResponse(response: unknown): AIMapping {
-	let responseText: string;
-
-	if (typeof response === 'string') {
-		responseText = response;
-	} else if (response && typeof response === 'object') {
-		const resp = response as Record<string, unknown>;
-		if (resp.content) {
-			if (typeof resp.content === 'string') {
-				responseText = resp.content;
-			} else if (Array.isArray(resp.content)) {
-				responseText = resp.content.map((c: { text?: string }) => c.text || '').join('');
-			} else {
-				responseText = JSON.stringify(resp.content);
+	const result = { ...data };
+	for (const key of Object.keys(result)) {
+		const val = result[key];
+		// Détecter les valeurs de checkbox (☑ ou ☐)
+		if (val === '☑' || val === '☐') {
+			if (style === 'text') {
+				result[key] = val === '☑' ? 'X' : ' ';
+			} else if (style === 'boolean') {
+				result[key] = val === '☑' ? 'true' : 'false';
 			}
-		} else if (resp.text) {
-			responseText = String(resp.text);
-		} else {
-			responseText = JSON.stringify(response);
-		}
-	} else {
-		throw new Error('Réponse LLM invalide');
-	}
-
-	// Extraire le JSON de la réponse
-	const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-	if (!jsonMatch) {
-		throw new Error('Pas de JSON trouvé dans la réponse LLM');
-	}
-
-	const parsed = JSON.parse(jsonMatch[0]);
-	return parsed.mappings || {};
-}
-
-/**
- * Convertit le mapping IA en données pour le template
- */
-function aiMappingToTemplateData(mapping: AIMapping): Record<string, string> {
-	const result: Record<string, string> = {};
-	for (const [tag, info] of Object.entries(mapping)) {
-		if (info.value !== undefined && info.value !== null) {
-			result[tag] = String(info.value);
 		}
 	}
 	return result;
 }
 
 /**
- * Remplace les tags dans le XML
+ * Échappe les caractères spéciaux XML
+ */
+function escapeXml(value: string): string {
+	return value
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;')
+		.replace(/'/g, '&apos;');
+}
+
+/**
+ * Remplace les tags {{TAG}} dans le XML par leurs valeurs
  */
 function replaceTagsInXml(
 	xml: string,
@@ -207,6 +138,7 @@ function replaceTagsInXml(
 	const replaced: string[] = [];
 	const remaining: string[] = [];
 
+	// Trouver tous les tags uniques
 	const allTags = xml.match(/\{\{[A-Z_0-9]+\}\}/gi) || [];
 	const uniqueTags = [...new Set(allTags)];
 
@@ -215,12 +147,10 @@ function replaceTagsInXml(
 		const value = data[tagName];
 
 		if (value !== undefined && value !== null && value !== '') {
+			// Remplacer le tag par sa valeur (échappée pour XML)
 			const escapedTag = fullTag.replace(/[{}]/g, '\\$&');
 			const regex = new RegExp(escapedTag, 'g');
-			const safeValue = String(value)
-				.replace(/&/g, '&amp;')
-				.replace(/</g, '&lt;')
-				.replace(/>/g, '&gt;');
+			const safeValue = escapeXml(String(value));
 			result = result.replace(regex, safeValue);
 			replaced.push(tagName);
 		} else {
@@ -228,32 +158,12 @@ function replaceTagsInXml(
 		}
 	}
 
-	// Nettoyer les tags restants sauf si on veut les garder
+	// Nettoyer les tags sans valeur (sauf si keepEmpty = true)
 	if (!keepEmpty) {
 		result = result.replace(/\{\{[A-Z_0-9]+\}\}/gi, '');
 	}
 
 	return { xml: result, replaced, remaining };
-}
-
-/**
- * Ajuste le style des checkboxes
- */
-function adjustCheckboxStyle(data: Record<string, string>, style: CheckboxStyle): Record<string, string> {
-	if (style === 'unicode') return data;
-
-	const result = { ...data };
-	for (const key of Object.keys(result)) {
-		if (key.startsWith('CHECK_')) {
-			const val = result[key];
-			if (style === 'text') {
-				result[key] = val === '☑' ? 'X' : ' ';
-			} else if (style === 'boolean') {
-				result[key] = val === '☑' ? 'true' : 'false';
-			}
-		}
-	}
-	return result;
 }
 
 // ============================================================================
@@ -266,110 +176,60 @@ export class DocxTemplateFiller implements INodeType {
 		name: 'docxTemplateFiller',
 		icon: 'file:docx.svg',
 		group: ['transform'],
-		version: 1,
-		subtitle: '={{$parameter["mappingMode"] === "ai" ? "🤖 IA" : $parameter["mappingMode"] === "hybrid" ? "🔄 Hybride" : "📋 Standard"}} - {{$parameter["documentType"].toUpperCase()}}',
+		version: 2,
+		subtitle: 'Remplit {{TAGS}} avec données JSON',
 		description:
-			'Remplit un document DOCX avec des données JSON. Mode Standard (schéma fixe) ou Mode IA (mapping dynamique avec n\'importe quel LLM).',
+			'Remplace les tags {{TAG}} d\'un document DOCX par les valeurs du JSON d\'entrée. Fonctionne avec tout document DOCX contenant des placeholders {{TAG}}.',
 		defaults: {
 			name: 'DOCX Template Filler',
 		},
-		inputs: [
-			{ displayName: '', type: 'main' as const },
-			{
-				displayName: 'Model',
-				maxConnections: 1,
-				type: 'ai_languageModel' as const,
-				required: false,
-			},
-		],
+		inputs: [{ displayName: '', type: 'main' as const }],
 		outputs: [{ displayName: '', type: 'main' as const }],
 		properties: [
-			// ==================== Mode de Mapping ====================
+			// ==================== Document Source ====================
 			{
-				displayName: 'Mode de Mapping',
-				name: 'mappingMode',
-				type: 'options',
-				options: [
-					{
-						name: '📋 Standard (Schéma Fixe)',
-						value: 'standard',
-						description: 'Utilise le schéma de tags prédéfini. Rapide et gratuit.',
-					},
-					{
-						name: '🤖 IA (Mapping Dynamique)',
-						value: 'ai',
-						description: 'Le LLM connecté analyse et mappe les données intelligemment. Flexible mais nécessite un LLM.',
-					},
-					{
-						name: '🔄 Hybride (Standard + IA)',
-						value: 'hybrid',
-						description: 'Schéma standard en priorité, IA pour les tags non reconnus.',
-					},
-				],
-				default: 'standard',
-				description: 'Comment mapper les données JSON aux tags du template',
-			},
-
-			// ==================== Notice LLM ====================
-			{
-				displayName: 'Connectez un modèle LLM (OpenAI, Claude, Ollama, etc.) à l\'entrée "Model" pour activer le mode IA.',
-				name: 'aiNotice',
-				type: 'notice',
-				default: '',
-				displayOptions: {
-					show: { mappingMode: ['ai', 'hybrid'] },
-				},
-			},
-
-			// ==================== Document Type ====================
-			{
-				displayName: 'Type de Document',
-				name: 'documentType',
-				type: 'options',
-				options: [
-					{ name: 'DC1 - Lettre de Candidature', value: 'dc1' },
-					{ name: 'DC2 - Déclaration du Candidat', value: 'dc2' },
-					{ name: 'AE - Acte d\'Engagement', value: 'ae' },
-					{ name: 'ATTRI1 - Acte d\'Engagement', value: 'attri1' },
-					{ name: 'Autre Document', value: 'autre' },
-				],
-				default: 'dc1',
-				description: 'Type de document (utilisé pour le schéma standard et le contexte IA)',
-			},
-
-			// ==================== Context for AI ====================
-			{
-				displayName: 'Contexte Document',
-				name: 'documentContext',
-				type: 'string',
-				typeOptions: {
-					rows: 2,
-				},
-				default: '',
-				displayOptions: {
-					show: { mappingMode: ['ai', 'hybrid'] },
-				},
-				placeholder: 'ex: Formulaire DC2 pour marché de services informatiques',
-				description: 'Description du document pour aider le LLM à comprendre le contexte',
-			},
-
-			// ==================== Binary Input ====================
-			{
-				displayName: 'Document à Remplir',
+				displayName: 'Document Template',
 				name: 'binaryProperty',
 				type: 'string',
 				default: 'data',
 				required: true,
-				description: 'Propriété binaire contenant le document DOCX avec tags {{TAG}}',
+				description:
+					'Nom de la propriété binaire contenant le document DOCX avec les tags {{TAG}} à remplacer. Ce document est généralement produit par le nœud TemplateMapper.',
 			},
 
-			// ==================== Data Input ====================
+			// ==================== Données à injecter ====================
 			{
-				displayName: 'Données',
+				displayName: 'Source des Données',
+				name: 'dataSource',
+				type: 'options',
+				options: [
+					{
+						name: 'JSON Complet (Item Courant)',
+						value: 'fullJson',
+						description:
+							'Utilise tout le JSON de l\'item courant. Les clés sont converties en tags (ex: entreprise.nom → ENTREPRISE_NOM).',
+					},
+					{
+						name: 'Champ Spécifique',
+						value: 'specificField',
+						description:
+							'Utilise un champ spécifique du JSON qui contient directement les tags et valeurs.',
+					},
+				],
+				default: 'fullJson',
+				description: 'D\'où proviennent les données à injecter dans le document.',
+			},
+			{
+				displayName: 'Champ de Données',
 				name: 'dataField',
 				type: 'string',
-				default: '',
-				description: 'Champ JSON contenant les données. Vide = utiliser tout le JSON.',
+				default: 'templateData',
+				displayOptions: {
+					show: { dataSource: ['specificField'] },
+				},
+				description:
+					'Nom du champ JSON contenant les données de mapping. Ce champ doit contenir un objet avec les tags comme clés (ex: { "NOM_COMMERCIAL": "Ma Société", "SIRET": "12345678901234" }).',
+				placeholder: 'ex: templateData, mappingData',
 			},
 
 			// ==================== Options ====================
@@ -381,37 +241,54 @@ export class DocxTemplateFiller implements INodeType {
 				default: {},
 				options: [
 					{
-						displayName: 'Style Checkboxes',
+						displayName: 'Style des Cases à Cocher',
 						name: 'checkboxStyle',
 						type: 'options',
 						options: [
-							{ name: 'Unicode (☑/☐)', value: 'unicode' },
-							{ name: 'Texte (X / )', value: 'text' },
-							{ name: 'Boolean (true/false)', value: 'boolean' },
+							{
+								name: 'Unicode (☑/☐)',
+								value: 'unicode',
+								description: 'Symboles Unicode pour les checkboxes',
+							},
+							{
+								name: 'Texte (X / espace)',
+								value: 'text',
+								description: 'X pour coché, espace pour non coché',
+							},
+							{
+								name: 'Booléen (true/false)',
+								value: 'boolean',
+								description: 'Valeurs textuelles true ou false',
+							},
 						],
 						default: 'unicode',
+						description:
+							'Comment afficher les valeurs booléennes (cases à cocher).',
 					},
 					{
-						displayName: 'Nom Fichier Sortie',
+						displayName: 'Nom du Fichier de Sortie',
 						name: 'outputFilename',
 						type: 'string',
 						default: '',
-						placeholder: 'ex: {{$json.entreprise.nom}}_DC1.docx',
-						description: 'Nom du fichier de sortie. Supporte les expressions n8n.',
+						placeholder: 'ex: document_rempli.docx',
+						description:
+							'Nom du fichier DOCX généré. Si vide, utilise le nom du fichier source avec suffixe "_FILLED".',
 					},
 					{
-						displayName: 'Conserver Tags Vides',
+						displayName: 'Conserver les Tags Non Remplis',
 						name: 'keepEmptyTags',
 						type: 'boolean',
 						default: false,
-						description: 'Ne pas supprimer les tags sans données correspondantes',
+						description:
+							'Si activé, les tags {{TAG}} sans valeur correspondante restent visibles dans le document. Sinon, ils sont supprimés.',
 					},
 					{
-						displayName: 'Inclure Détails Mapping',
-						name: 'includeMapping',
+						displayName: 'Inclure le Rapport de Mapping',
+						name: 'includeReport',
 						type: 'boolean',
-						default: false,
-						description: 'Inclure les détails du mapping IA dans la sortie JSON (debug)',
+						default: true,
+						description:
+							'Inclut dans la sortie JSON la liste des tags remplacés et non remplacés pour faciliter le débogage.',
 					},
 				],
 			},
@@ -422,76 +299,66 @@ export class DocxTemplateFiller implements INodeType {
 		const items = this.getInputData();
 		const returnData: INodeExecutionData[] = [];
 
-		// Récupérer le LLM si connecté
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		let llm: any = null;
-		try {
-			llm = await this.getInputConnectionData('ai_languageModel', 0);
-		} catch {
-			// Pas de LLM connecté, ce n'est pas forcément une erreur
-		}
-
 		for (let i = 0; i < items.length; i++) {
 			try {
 				// ============================================================
 				// Récupérer les paramètres
 				// ============================================================
 
-				const mappingMode = this.getNodeParameter('mappingMode', i) as MappingMode;
-				const documentType = this.getNodeParameter('documentType', i) as string;
-				const binaryProperty = this.getNodeParameter('binaryProperty', i) as string;
-				const dataField = this.getNodeParameter('dataField', i) as string;
+				const binaryProperty = this.getNodeParameter(
+					'binaryProperty',
+					i,
+				) as string;
+				const dataSource = this.getNodeParameter('dataSource', i) as string;
 				const options = this.getNodeParameter('options', i) as {
 					checkboxStyle?: CheckboxStyle;
 					outputFilename?: string;
 					keepEmptyTags?: boolean;
-					includeMapping?: boolean;
+					includeReport?: boolean;
 				};
 
 				const checkboxStyle = options.checkboxStyle || 'unicode';
 				const keepEmptyTags = options.keepEmptyTags || false;
-				const includeMapping = options.includeMapping || false;
-
-				// Vérifier que le LLM est connecté si mode IA
-				if ((mappingMode === 'ai' || mappingMode === 'hybrid') && !llm) {
-					throw new NodeOperationError(
-						this.getNode(),
-						'Mode IA sélectionné mais aucun modèle LLM connecté. Connectez un modèle (OpenAI, Claude, Ollama...) à l\'entrée "Model".',
-						{ itemIndex: i },
-					);
-				}
+				const includeReport = options.includeReport !== false;
 
 				// ============================================================
-				// Charger le document binaire
+				// Charger le document DOCX
 				// ============================================================
 
 				const binaryData = items[i].binary;
 				if (!binaryData || !binaryData[binaryProperty]) {
 					throw new NodeOperationError(
 						this.getNode(),
-						`Aucun document trouvé dans "${binaryProperty}"`,
+						`Aucun document trouvé dans la propriété binaire "${binaryProperty}". Assurez-vous qu'un document DOCX est connecté en entrée.`,
 						{ itemIndex: i },
 					);
 				}
 
-				const documentBuffer = await this.helpers.getBinaryDataBuffer(i, binaryProperty);
-				const originalFilename = binaryData[binaryProperty].fileName || 'document.docx';
+				const documentBuffer = await this.helpers.getBinaryDataBuffer(
+					i,
+					binaryProperty,
+				);
+				const originalFilename =
+					binaryData[binaryProperty].fileName || 'document.docx';
 
 				// ============================================================
-				// Charger les données JSON
+				// Charger les données de mapping
 				// ============================================================
 
 				let rawData: Record<string, unknown>;
-				if (dataField && dataField.trim() !== '') {
+
+				if (dataSource === 'specificField') {
+					const dataField = this.getNodeParameter('dataField', i) as string;
 					rawData = items[i].json[dataField] as Record<string, unknown>;
-					if (!rawData) {
+					if (!rawData || typeof rawData !== 'object') {
 						throw new NodeOperationError(
 							this.getNode(),
-							`Aucune donnée trouvée dans "${dataField}"`,
+							`Le champ "${dataField}" n'existe pas ou n'est pas un objet valide. Vérifiez que ce champ contient les données de mapping (ex: { "NOM_COMMERCIAL": "...", "SIRET": "..." }).`,
 							{ itemIndex: i },
 						);
 					}
 				} else {
+					// fullJson - utiliser tout le JSON de l'item
 					rawData = items[i].json as Record<string, unknown>;
 				}
 
@@ -499,80 +366,48 @@ export class DocxTemplateFiller implements INodeType {
 				// Ouvrir le document et extraire les tags
 				// ============================================================
 
-				const zip = new PizZip(documentBuffer);
-				let xml = zip.file('word/document.xml')?.asText() || '';
-
-				if (!xml || xml.length < 100) {
+				let zip: PizZip;
+				try {
+					zip = new PizZip(documentBuffer);
+				} catch {
 					throw new NodeOperationError(
 						this.getNode(),
-						'Document DOCX invalide ou vide',
+						'Le fichier fourni n\'est pas un document DOCX valide (archive ZIP corrompue ou format incorrect).',
 						{ itemIndex: i },
 					);
 				}
 
+				const documentXmlFile = zip.file('word/document.xml');
+				if (!documentXmlFile) {
+					throw new NodeOperationError(
+						this.getNode(),
+						'Le fichier DOCX ne contient pas de document.xml. Vérifiez que le fichier est un document Word valide.',
+						{ itemIndex: i },
+					);
+				}
+
+				let xml = documentXmlFile.asText();
 				const documentTags = extractTagsFromXml(xml);
 
 				// ============================================================
-				// Préparer les données selon le mode
+				// Préparer les données de mapping
 				// ============================================================
 
-				let templateData: Record<string, string> = {};
-				let aiMappingResult: AIMapping | null = null;
-				let llmUsed = false;
-
-				if (mappingMode === 'standard') {
-					// Mode standard: schéma fixe uniquement
-					templateData = prepareStandardData(rawData, documentType);
-
-				} else if (mappingMode === 'ai') {
-					// Mode IA: tout via le LLM
-					const flatData = flattenJson(rawData);
-					const documentContext = this.getNodeParameter('documentContext', i) as string;
-					const prompt = buildMappingPrompt(
-						documentTags,
-						flatData,
-						documentContext || `Document ${documentType.toUpperCase()} - Marché public français`,
-					);
-
-					const response = await llm!.invoke(prompt);
-					aiMappingResult = parseLLMResponse(response);
-					templateData = aiMappingToTemplateData(aiMappingResult);
-					llmUsed = true;
-
-				} else if (mappingMode === 'hybrid') {
-					// Mode hybride: standard d'abord, puis IA pour le reste
-					templateData = prepareStandardData(rawData, documentType);
-
-					// Trouver les tags non mappés par le schéma standard
-					const unmappedTags = documentTags.filter(t => !templateData[t] || templateData[t] === '');
-
-					if (unmappedTags.length > 0 && llm) {
-						const flatData = flattenJson(rawData);
-						const documentContext = this.getNodeParameter('documentContext', i) as string;
-						const prompt = buildMappingPrompt(
-							unmappedTags,
-							flatData,
-							documentContext || `Document ${documentType.toUpperCase()} - Tags supplémentaires`,
-						);
-
-						const response = await llm.invoke(prompt);
-						aiMappingResult = parseLLMResponse(response);
-						const aiData = aiMappingToTemplateData(aiMappingResult);
-
-						// Fusionner: standard a priorité
-						templateData = { ...aiData, ...templateData };
-						llmUsed = true;
-					}
-				}
+				// Aplatir le JSON en tags (ENTREPRISE_NOM, etc.)
+				let templateData = flattenJsonToTags(rawData);
 
 				// Ajuster le style des checkboxes
 				templateData = adjustCheckboxStyle(templateData, checkboxStyle);
 
 				// ============================================================
-				// Remplir le document
+				// Remplacer les tags dans le document
 				// ============================================================
 
-				const { xml: filledXml, replaced, remaining } = replaceTagsInXml(xml, templateData, keepEmptyTags);
+				const { xml: filledXml, replaced, remaining } = replaceTagsInXml(
+					xml,
+					templateData,
+					keepEmptyTags,
+				);
 
 				zip.file('word/document.xml', filledXml);
 
@@ -585,13 +420,9 @@ export class DocxTemplateFiller implements INodeType {
 				// Préparer la sortie
 				// ============================================================
 
-				const entreprise = rawData.entreprise as Record<string, unknown> | undefined;
-				const companyName = entreprise?.nom_commercial
-					? String(entreprise.nom_commercial).replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30)
-					: 'document';
-
-				const date = new Date().toISOString().split('T')[0];
-				const finalFilename = options.outputFilename || `${companyName}_${documentType.toUpperCase()}_${date}.docx`;
+				const finalFilename =
+					options.outputFilename ||
+					originalFilename.replace('.docx', '_FILLED.docx');
 
 				const binaryOutput = await this.helpers.prepareBinaryData(
 					outputBuffer,
@@ -600,27 +431,37 @@ export class DocxTemplateFiller implements INodeType {
 				);
 
 				// Construire le JSON de sortie
-				const jsonOutput = {
+				const jsonOutput: {
+					success: boolean;
+					filename: string;
+					originalFilename: string;
+					report?: {
+						tagsInDocument: number;
+						tagsReplaced: number;
+						tagsRemaining: number;
+						replacedTags: string[];
+						remainingTags: string[];
+					};
+				} = {
 					success: true,
-					mappingMode,
-					llmUsed,
-					documentType,
 					filename: finalFilename,
 					originalFilename,
-					tagsInDocument: documentTags.length,
-					tagsReplaced: replaced.length,
-					tagsRemaining: remaining.length,
-					replacedTags: replaced,
-					remainingTags: remaining,
-					companyName: (entreprise?.nom_commercial as string) || '',
-					aiMapping: includeMapping && aiMappingResult ? aiMappingResult : undefined,
 				};
+
+				if (includeReport) {
+					jsonOutput.report = {
+						tagsInDocument: documentTags.length,
+						tagsReplaced: replaced.length,
+						tagsRemaining: remaining.length,
+						replacedTags: replaced,
+						remainingTags: remaining,
+					};
+				}
 
 				returnData.push({
 					json: jsonOutput,
 					binary: { data: binaryOutput },
 				});
-
 			} catch (error) {
 				if (this.continueOnFail()) {
 					returnData.push({
