@@ -29,3 +29,4 @@ __exportStar(require("./prompt.service"), exports);
 __exportStar(require("./tag-applicator.service"), exports);
 __exportStar(require("./segment-matcher.service"), exports);
 __exportStar(require("./pattern-matcher.service"), exports);
+__exportStar(require("./checkbox.service"), exports);

@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-docx-filler",
-  "version": "15.3.0",
+  "version": "17.0.0",
   "description": "Nodes n8n pour créer et remplir des templates DOCX avec des tags {{TAG}}. TemplateMapper v12 (Transfer Learning - apprend d'un template pour taguer des documents similaires) + DocxTemplateFiller (remplissage).",
   "keywords": [
     "n8n-community-node-package",

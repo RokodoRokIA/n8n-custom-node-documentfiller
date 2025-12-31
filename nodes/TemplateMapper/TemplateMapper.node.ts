@@ -55,11 +55,6 @@ import {
 	extractCheckboxes,
 	findCheckboxPairs,
 	generateCheckboxTags,
-	matchCheckboxes,
-	applyCheckboxesToXml,
-	ExtractedCheckbox,
-	CheckboxPair,
-	CheckboxMatch,
 } from '../shared';
 
 // Import des services
@@ -82,6 +77,10 @@ import {
 	// Gestion du cache
 	clearAllCaches,
 	resetParagraphCache,
+	// Service d'analyse des checkboxes par IA
+	analyzeCheckboxesWithAI,
+	extractDocumentContext,
+	CheckboxAnalysisResult,
 } from './services';
 
 // ============================================================================
@@ -123,8 +122,8 @@ export class TemplateMapper implements INodeType {
 		name: 'templateMapper',
 		icon: 'file:docx.svg',
 		group: ['transform'],
-		version: 16,
-		subtitle: 'Transfer Learning - Tous LLM supportés',
+		version: 17,
+		subtitle: 'Transfer Learning + Analyse IA des Checkboxes',
 
 		// Description
 		description:
@@ -499,38 +498,62 @@ async function processItem(
 	);
 
 	// ============================================================
-	// ÉTAPE 7b: Appliquer l'état des checkboxes au document cible
+	// ÉTAPE 7b: Analyser et appliquer les checkboxes avec l'IA
 	// ============================================================
 
 	let modifiedXml = taggedXml;
 	let checkboxApplied: string[] = [];
 	let checkboxFailed: string[] = [];
+	let checkboxAnalysisResult: CheckboxAnalysisResult | undefined;
 
-	if (templateCheckboxes.length > 0 && targetCheckboxes.length > 0) {
-		// Matcher les checkboxes template → cible
-		const checkboxMatches = matchCheckboxes(templateCheckboxes, targetCheckboxes);
+	if (targetCheckboxes.length > 0) {
+		// Récupérer le modèle LLM pour l'analyse des checkboxes
+		const model = (await ctx.getInputConnectionData(
+			NodeConnectionTypes.AiLanguageModel,
+			itemIndex
+		)) as LLMModel | undefined;
 
-		if (params.debug) {
-			console.log(`\n☑️ Checkbox matches: ${checkboxMatches.length}`);
-			checkboxMatches.forEach((m) => {
-				const arrow = m.newState ? '☑' : '☐';
-				console.log(`  - "${m.templateCheckbox.label.substring(0, 30)}" → ${arrow}`);
-			});
-		}
-
-		// Appliquer les états des checkboxes
-		if (checkboxMatches.length > 0) {
-			const checkboxResult = applyCheckboxesToXml(modifiedXml, checkboxMatches);
-			modifiedXml = checkboxResult.xml;
-			checkboxApplied = checkboxResult.applied;
-			checkboxFailed = checkboxResult.failed;
+		if (model) {
+			// Extraire le contexte textuel du document pour l'analyse IA
+			const documentContext = extractDocumentContext(targetDoc.xml);
 
 			if (params.debug) {
-				console.log(`   ✅ Checkboxes appliquées: ${checkboxApplied.length}`);
-				if (checkboxFailed.length > 0) {
-					console.log(`   ⚠️ Checkboxes échouées: ${checkboxFailed.length}`);
-				}
+				console.log(`\n☑️ === ANALYSE IA DES CHECKBOXES ===`);
+				console.log(`   Checkboxes cibles: ${targetCheckboxes.length}`);
+				console.log(`   Checkboxes template: ${templateCheckboxes.length}`);
+				console.log(`   Contexte document: ${Math.round(documentContext.length / 1000)}KB`);
 			}
+
+			// Analyser les checkboxes avec l'IA
+			checkboxAnalysisResult = await analyzeCheckboxesWithAI(
+				model,
+				modifiedXml,
+				templateCheckboxes,
+				targetCheckboxes,
+				templateCheckboxPairs,
+				documentContext,
+				params.debug
+			);
+
+			modifiedXml = checkboxAnalysisResult.xml;
+			checkboxApplied = checkboxAnalysisResult.applied;
+			checkboxFailed = checkboxAnalysisResult.failed;
+
+			if (params.debug) {
+				console.log(`\n☑️ Résultat analyse IA:`);
+				console.log(`   Mode: ${checkboxAnalysisResult.mode}`);
+				console.log(`   Décisions: ${checkboxAnalysisResult.decisions.length}`);
+				console.log(`   ✅ Appliquées: ${checkboxApplied.length}`);
+				if (checkboxFailed.length > 0) {
+					console.log(`   ⚠️ Échouées: ${checkboxFailed.length}`);
+				}
+				checkboxAnalysisResult.decisions.forEach((d) => {
+					const arrow = d.shouldBeChecked ? '☑' : '☐';
+					console.log(`     - idx=${d.targetIndex} "${d.label.substring(0, 30)}" → ${arrow} (${d.reason || 'N/A'})`);
+				});
+			}
+		} else {
+			console.warn('⚠️ Pas de modèle LLM pour l\'analyse des checkboxes');
 		}
 	}
 
@@ -586,7 +609,7 @@ async function processItem(
 			failed,
 			availableTags: extractedTags.map((t) => `{{${t.tag}}}`),
 			templateDataStructure,
-			// Informations sur les checkboxes
+			// Informations sur les checkboxes (avec analyse IA)
 			checkboxes: {
 				templateCount: templateCheckboxes.length,
 				targetCount: targetCheckboxes.length,
@@ -594,6 +617,15 @@ async function processItem(
 				tags: checkboxDataStructure,
 				applied: checkboxApplied,
 				failed: checkboxFailed,
+				// Nouvelles informations sur l'analyse IA
+				aiAnalysisMode: checkboxAnalysisResult?.mode || 'none',
+				aiDecisions: checkboxAnalysisResult?.decisions.map(d => ({
+					index: d.targetIndex,
+					label: d.label,
+					checked: d.shouldBeChecked,
+					confidence: d.confidence,
+					reason: d.reason,
+				})) || [],
 			},
 			segmentationUsed,
 			patternFallbackUsed,

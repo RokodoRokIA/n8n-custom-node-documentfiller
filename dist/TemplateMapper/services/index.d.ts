@@ -13,3 +13,4 @@ export * from './prompt.service';
 export * from './tag-applicator.service';
 export * from './segment-matcher.service';
 export * from './pattern-matcher.service';
+export * from './checkbox.service';
