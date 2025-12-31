@@ -13,3 +13,5 @@ export * from './text.utils';
 export * from './docx.utils';
 export * from './document-segmenter.utils';
 export * from './checkbox.utils';
+export * from './pdf.utils';
+export * from './style-detector.utils';

@@ -307,8 +307,9 @@ export function isInsideTableCell(
 
 /**
  * Interface pour un paragraphe XML extrait.
+ * Note: Différent de ExtractedParagraph dans extraction.types.ts
  */
-export interface ExtractedParagraph {
+export interface XmlParagraph {
 	/** Texte brut du paragraphe */
 	text: string;
 
@@ -328,8 +329,8 @@ export interface ExtractedParagraph {
  * @param xml - Le XML du document
  * @returns Liste des paragraphes avec leur position et contenu
  */
-export function extractParagraphsFromXml(xml: string): ExtractedParagraph[] {
-	const paragraphs: ExtractedParagraph[] = [];
+export function extractParagraphsFromXml(xml: string): XmlParagraph[] {
+	const paragraphs: XmlParagraph[] = [];
 	const paragraphRegex = /<w:p[^>]*>([\s\S]*?)<\/w:p>/g;
 
 	let match;

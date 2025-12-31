@@ -29,3 +29,5 @@ __exportStar(require("./text.utils"), exports);
 __exportStar(require("./docx.utils"), exports);
 __exportStar(require("./document-segmenter.utils"), exports);
 __exportStar(require("./checkbox.utils"), exports);
+__exportStar(require("./pdf.utils"), exports);
+__exportStar(require("./style-detector.utils"), exports);

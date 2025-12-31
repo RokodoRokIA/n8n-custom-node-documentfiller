@@ -1,14 +1,13 @@
 "use strict";
 /**
  * ============================================================================
- * TYPES PARTAGÉS - INDEX
+ * DOCX EXTRACTOR - INDEX
  * ============================================================================
  *
- * Ce fichier centralise l'export de tous les types partagés entre les nœuds.
- * Cela permet un import propre : import { TagContext, DocumentType } from '../shared/types';
+ * Point d'entrée pour le nœud DocxExtractor.
  *
  * @author Rokodo
- * @version 2.0.0
+ * @version 1.0.0
  */
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
@@ -25,7 +24,5 @@ var __exportStar = (this && this.__exportStar) || function(m, exports) {
     for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports, p)) __createBinding(exports, m, p);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-__exportStar(require("./docx.types"), exports);
-__exportStar(require("./llm.types"), exports);
-__exportStar(require("./pdf.types"), exports);
-__exportStar(require("./extraction.types"), exports);
+__exportStar(require("./DocxExtractor.node"), exports);
+__exportStar(require("./services"), exports);

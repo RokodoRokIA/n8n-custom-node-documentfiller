@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-docx-filler",
-  "version": "17.8.0",
+  "version": "18.0.0",
   "description": "Nodes n8n pour créer et remplir des templates DOCX avec des tags {{TAG}}. TemplateMapper v12 (Transfer Learning - apprend d'un template pour taguer des documents similaires) + DocxTemplateFiller (remplissage).",
   "keywords": [
     "n8n-community-node-package",
@@ -14,7 +14,11 @@
     "automation",
     "ai",
     "llm",
-    "langchain"
+    "langchain",
+    "pdf",
+    "converter",
+    "extractor",
+    "json"
   ],
   "license": "MIT",
   "homepage": "https://github.com/rokodo-io/n8n-nodes-docx-filler",
@@ -39,7 +43,8 @@
     "n8nNodesApiVersion": 1,
     "nodes": [
       "dist/DocxTemplateFiller/DocxTemplateFiller.node.js",
-      "dist/TemplateMapper/TemplateMapper.node.js"
+      "dist/TemplateMapper/TemplateMapper.node.js",
+      "dist/DocxExtractor/DocxExtractor.node.js"
     ]
   },
   "devDependencies": {

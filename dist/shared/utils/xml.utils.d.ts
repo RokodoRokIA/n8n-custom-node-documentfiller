@@ -124,8 +124,9 @@ export declare function escapeXml(value: string): string;
 export declare function isInsideTableCell(xml: string, paragraphStart: number, paragraphXml: string): boolean;
 /**
  * Interface pour un paragraphe XML extrait.
+ * Note: Différent de ExtractedParagraph dans extraction.types.ts
  */
-export interface ExtractedParagraph {
+export interface XmlParagraph {
     /** Texte brut du paragraphe */
     text: string;
     /** Position de début dans le XML */
@@ -141,4 +142,4 @@ export interface ExtractedParagraph {
  * @param xml - Le XML du document
  * @returns Liste des paragraphes avec leur position et contenu
  */
-export declare function extractParagraphsFromXml(xml: string): ExtractedParagraph[];
+export declare function extractParagraphsFromXml(xml: string): XmlParagraph[];

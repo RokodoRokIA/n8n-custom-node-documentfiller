@@ -11,3 +11,5 @@
  */
 export * from './docx.types';
 export * from './llm.types';
+export * from './pdf.types';
+export * from './extraction.types';
