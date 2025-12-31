@@ -102,6 +102,23 @@ export interface TagContext {
 
 	/** Index du paragraphe dans le document */
 	paragraphIndex: number;
+
+	// === INFORMATIONS DE POSITION DANS LES TABLEAUX ===
+
+	/** Index du tableau dans le document (si applicable) */
+	tableIndex?: number;
+
+	/** Index de la ligne dans le tableau (0 = en-tête) */
+	rowIndex?: number;
+
+	/** Index de la colonne dans le tableau */
+	columnIndex?: number;
+
+	/** Texte de l'en-tête de ligne (colonne 0) */
+	rowHeader?: string;
+
+	/** Texte de l'en-tête de colonne (ligne 0) */
+	columnHeader?: string;
 }
 
 /**
@@ -157,6 +174,23 @@ export interface TargetParagraph {
 
 	/** Indique si le paragraphe contient déjà un tag {{...}} */
 	hasExistingTag: boolean;
+
+	// === INFORMATIONS DE POSITION DANS LES TABLEAUX ===
+
+	/** Index du tableau dans le document (si applicable) */
+	tableIndex?: number;
+
+	/** Index de la ligne dans le tableau (0 = en-tête) */
+	rowIndex?: number;
+
+	/** Index de la colonne dans le tableau */
+	columnIndex?: number;
+
+	/** Texte de l'en-tête de ligne (colonne 0) */
+	rowHeader?: string;
+
+	/** Texte de l'en-tête de colonne (ligne 0) */
+	columnHeader?: string;
 }
 
 // ============================================================================

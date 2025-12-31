@@ -35,6 +35,56 @@ export declare function loadDocxContent(buffer: Buffer): {
  */
 export declare function saveDocxContent(zip: PizZip, xml: string): Buffer;
 /**
+ * Résultat de la validation XML DOCX (version détaillée).
+ */
+export interface DocxXmlValidationResult {
+    isValid: boolean;
+    errors: XmlValidationError[];
+    warnings: string[];
+}
+/**
+ * Erreur de validation XML.
+ */
+export interface XmlValidationError {
+    type: 'unclosed_tag' | 'mismatched_tag' | 'invalid_structure' | 'corrupted_content' | 'encoding_error';
+    message: string;
+    position?: number;
+    tag?: string;
+    severity: 'critical' | 'warning';
+}
+/**
+ * Valide que le XML DOCX est structurellement correct.
+ *
+ * VERSION v4.2 SIMPLIFIÉE:
+ * - Ne vérifie que les erreurs VRAIMENT critiques
+ * - Évite les faux positifs qui empêchaient le fonctionnement
+ *
+ * Erreurs critiques:
+ * 1. Balises w:document ou w:body non fermées
+ * 2. Caractères de contrôle invalides
+ *
+ * @param xml - Le XML à valider
+ * @returns Résultat de la validation avec erreurs détaillées
+ */
+export declare function validateDocxXml(xml: string): DocxXmlValidationResult;
+/**
+ * Tente de réparer un XML DOCX corrompu.
+ *
+ * Cette fonction essaie de corriger les problèmes courants:
+ * 1. Fermer les balises non fermées
+ * 2. Supprimer les caractères invalides
+ * 3. Corriger les tags {{TAG}} mal formés
+ *
+ * @param xml - Le XML à réparer
+ * @param originalXml - Le XML original (pour rollback si nécessaire)
+ * @returns Le XML réparé ou l'original si la réparation échoue
+ */
+export declare function repairDocxXml(xml: string, originalXml: string): {
+    xml: string;
+    repaired: boolean;
+    repairs: string[];
+};
+/**
  * Détecte automatiquement le type de document administratif.
  *
  * Cette fonction analyse le contenu et le nom du fichier pour déterminer
@@ -99,3 +149,51 @@ export declare function generateDataStructureFromTags(extractedTags: ExtractedTa
  * @returns Liste des paragraphes avec leurs métadonnées
  */
 export declare function extractTargetParagraphs(xml: string): TargetParagraph[];
+/**
+ * Représente une cellule de tableau extraite.
+ */
+export interface TableCellInfo {
+    /** Index du tableau dans le document */
+    tableIndex: number;
+    /** Index de la ligne (0 = en-tête) */
+    rowIndex: number;
+    /** Index de la colonne */
+    columnIndex: number;
+    /** Texte de la cellule */
+    text: string;
+    /** Est-ce une cellule vide ? */
+    isEmpty: boolean;
+    /** Texte de l'en-tête de ligne (colonne 0) */
+    rowHeader: string;
+    /** Texte de l'en-tête de colonne (ligne 0) */
+    columnHeader: string;
+    /** Position dans le XML */
+    xmlStart: number;
+    xmlEnd: number;
+    /** Contient des tags ? */
+    hasTags: boolean;
+    /** Tags trouvés */
+    tags: string[];
+}
+/**
+ * Extrait toutes les cellules de tableaux avec leurs positions.
+ * Inclut les cellules vides (crucial pour le matching des tableaux multi-colonnes).
+ *
+ * @param xml - Le XML du document
+ * @returns Liste des cellules avec leur position dans le tableau
+ */
+export declare function extractTableCells(xml: string): TableCellInfo[];
+/**
+ * Enrichit les paragraphes cibles avec les informations de position dans les tableaux.
+ * Ajoute également les cellules vides comme paragraphes potentiels.
+ *
+ * AMÉLIORATION v4.0:
+ * - Enrichit TOUS les paragraphes dont la position XML est dans une cellule
+ * - Ajoute les cellules vides même en colonne 0
+ * - Meilleure détection des positions avec tolérance
+ *
+ * @param xml - Le XML du document
+ * @param paragraphs - Les paragraphes déjà extraits
+ * @returns Paragraphes enrichis avec position de tableau + cellules vides ajoutées
+ */
+export declare function enrichParagraphsWithTableInfo(xml: string, paragraphs: TargetParagraph[]): TargetParagraph[];

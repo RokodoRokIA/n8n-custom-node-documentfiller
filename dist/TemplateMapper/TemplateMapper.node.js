@@ -1,47 +1,42 @@
 "use strict";
 /**
  * ============================================================================
- * TEMPLATE MAPPER - Nœud n8n pour taguer automatiquement des documents DOCX
+ * TEMPLATE MAPPER - Noeud n8n pour taguer automatiquement des documents DOCX
  * ============================================================================
  *
- * Ce nœud utilise le "Transfer Learning" pour apprendre d'un template DOCX
- * déjà taggué et appliquer les mêmes tags à un document similaire non taggué.
+ * Ce noeud utilise le "Transfer Learning" pour apprendre d'un template DOCX
+ * deja taggue et appliquer les memes tags a un document similaire non taggue.
+ *
+ * ARCHITECTURE v3.0 - UNIFIED MAPPING:
+ * - 1 seul appel LLM pour Tags + Checkboxes
+ * - Pattern Few-Shot Learning coherent
+ * - Fallback semantique integre
  *
  * FLUX DE TRAVAIL :
- * 1. L'utilisateur fournit un template de référence (avec tags {{TAG}})
+ * 1. L'utilisateur fournit un template de reference (avec tags {{TAG}})
  * 2. L'utilisateur fournit un document cible (sans tags)
- * 3. Le nœud extrait les tags et leur contexte du template
+ * 3. Le noeud extrait les tags, checkboxes et leur contexte du template
  * 4. Un LLM analyse les deux documents et trouve les correspondances
- * 5. Les tags sont insérés dans le document cible
- *
- * ENTRÉES :
- * - Document cible (DOCX binaire) : le document à taguer
- * - Template de référence (DOCX binaire) : le modèle avec les tags
- * - Modèle LLM connecté (OBLIGATOIRE) : supporte TOUS les LLM de n8n
- *
- * SORTIES :
- * - Document taggué (DOCX binaire)
- * - Structure de données pour DocxTemplateFiller (JSON)
- * - Statistiques de mapping
+ * 5. Les tags et etats de checkboxes sont appliques au document cible
  *
  * @author Rokodo
- * @version 2.0.0 (refactored)
+ * @version 3.0.0 (unified architecture)
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.TemplateMapper = void 0;
 const n8n_workflow_1 = require("n8n-workflow");
-// Import des types et utilitaires partagés
+// Import des types et utilitaires partages
 const shared_1 = require("../shared");
 // Import des services
 const services_1 = require("./services");
 // ============================================================================
-// DÉFINITION DU NŒUD
+// DEFINITION DU NOEUD
 // ============================================================================
 class TemplateMapper {
     constructor() {
         /**
-         * Description du nœud pour l'interface n8n.
-         * Configure les entrées, sorties, et paramètres disponibles.
+         * Description du noeud pour l'interface n8n.
+         * Configure les entrees, sorties, et parametres disponibles.
          */
         this.description = {
             // Identification
@@ -49,21 +44,20 @@ class TemplateMapper {
             name: 'templateMapper',
             icon: 'file:docx.svg',
             group: ['transform'],
-            version: 17,
-            subtitle: 'Transfer Learning + Analyse IA des Checkboxes',
+            version: 18,
+            subtitle: 'Transfer Learning Unifie (Tags + Checkboxes)',
             // Description
-            description: "Apprend d'un template DOCX taggué pour taguer automatiquement un document similaire. " +
-                'Les tags sont extraits automatiquement du template de référence.',
-            // Configuration par défaut
+            description: "Apprend d'un template DOCX taggue pour taguer automatiquement un document similaire. " +
+                'Tags et checkboxes sont analyses en un seul appel IA.',
+            // Configuration par defaut
             defaults: {
                 name: 'Template Mapper',
             },
-            // Entrées du nœud
+            // Entrees du noeud
             inputs: [
-                // Entrée principale (données)
+                // Entree principale (donnees)
                 { displayName: '', type: n8n_workflow_1.NodeConnectionTypes.Main },
-                // Entrée OBLIGATOIRE pour un modèle LLM
-                // Supporte TOUS les LLM de n8n : OpenAI, Claude, Gemini, Mistral, Ollama, Groq, Azure, etc.
+                // Entree OBLIGATOIRE pour un modele LLM
                 {
                     displayName: 'Model',
                     type: n8n_workflow_1.NodeConnectionTypes.AiLanguageModel,
@@ -71,11 +65,11 @@ class TemplateMapper {
                     maxConnections: 1,
                 },
             ],
-            // Sortie du nœud
+            // Sortie du noeud
             outputs: [{ displayName: '', type: n8n_workflow_1.NodeConnectionTypes.Main }],
-            // Pas de credentials spécifiques - le LLM est fourni via la connexion
+            // Pas de credentials specifiques - le LLM est fourni via la connexion
             credentials: [],
-            // Paramètres du nœud
+            // Parametres du noeud (simplifie - sans option segmentation)
             properties: [
                 // ==================== DOCUMENT CIBLE ====================
                 {
@@ -84,17 +78,16 @@ class TemplateMapper {
                     type: 'string',
                     default: 'data',
                     required: true,
-                    description: 'Nom du champ binaire contenant le document DOCX à taguer',
+                    description: 'Nom du champ binaire contenant le document DOCX a taguer',
                 },
-                // ==================== TEMPLATE DE RÉFÉRENCE ====================
+                // ==================== TEMPLATE DE REFERENCE ====================
                 {
-                    displayName: 'Template de Référence',
+                    displayName: 'Template de Reference',
                     name: 'referenceTemplateProperty',
                     type: 'string',
                     default: 'template',
                     required: true,
-                    description: 'Nom du champ binaire contenant le template DOCX avec les tags {{TAG}} existants. ' +
-                        'Les tags sont extraits automatiquement.',
+                    description: 'Nom du champ binaire contenant le template DOCX avec les tags {{TAG}} existants.',
                 },
                 // ==================== OPTIONS ====================
                 {
@@ -109,38 +102,14 @@ class TemplateMapper {
                             name: 'outputFilename',
                             type: 'string',
                             default: '',
-                            description: 'Nom du fichier de sortie (par défaut: original_tagged.docx)',
+                            description: 'Nom du fichier de sortie (par defaut: original_tagged.docx)',
                         },
                         {
                             displayName: 'Mode Debug',
                             name: 'debug',
                             type: 'boolean',
                             default: false,
-                            description: 'Afficher les informations de débogage détaillées',
-                        },
-                        {
-                            displayName: 'Segmentation du Document',
-                            name: 'useSegmentation',
-                            type: 'options',
-                            options: [
-                                {
-                                    name: 'Automatique (recommandé)',
-                                    value: 'auto',
-                                    description: 'Active la segmentation pour les documents volumineux',
-                                },
-                                {
-                                    name: 'Toujours activer',
-                                    value: 'always',
-                                    description: 'Force la segmentation. Améliore la précision (tableaux CA)',
-                                },
-                                {
-                                    name: 'Désactiver',
-                                    value: 'never',
-                                    description: 'Désactive la segmentation.',
-                                },
-                            ],
-                            default: 'auto',
-                            description: 'Divise le document en sections pour un matching plus précis.',
+                            description: 'Afficher les informations de debogage detaillees',
                         },
                     ],
                 },
@@ -148,48 +117,37 @@ class TemplateMapper {
         };
     }
     // ============================================================================
-    // EXÉCUTION DU NŒUD
+    // EXECUTION DU NOEUD
     // ============================================================================
     /**
-     * Point d'entrée principal du nœud.
-     * Traite chaque item d'entrée et produit les résultats.
+     * Point d'entree principal du noeud.
+     * Traite chaque item d'entree et produit les resultats.
      */
     async execute() {
         const items = this.getInputData();
         const returnData = [];
-        // IMPORTANT: Vider les caches au début pour éviter les données périmées
-        (0, services_1.clearAllCaches)();
-        try {
-            // Traiter chaque item d'entrée
-            for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
-                // Réinitialiser le cache des paragraphes pour chaque item
-                (0, services_1.resetParagraphCache)();
-                try {
-                    const result = await processItem(this, itemIndex, items[itemIndex]);
-                    returnData.push(result);
+        // Traiter chaque item d'entree
+        for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+            try {
+                const result = await processItem(this, itemIndex, items[itemIndex]);
+                returnData.push(result);
+            }
+            catch (error) {
+                // Gestion des erreurs : continuer ou echouer selon la configuration
+                if (this.continueOnFail()) {
+                    returnData.push({
+                        json: {
+                            success: false,
+                            error: error.message,
+                        },
+                    });
                 }
-                catch (error) {
-                    // Gestion des erreurs : continuer ou échouer selon la configuration
-                    if (this.continueOnFail()) {
-                        returnData.push({
-                            json: {
-                                success: false,
-                                error: error.message,
-                            },
-                        });
-                    }
-                    else {
-                        throw error;
-                    }
+                else {
+                    throw error;
                 }
             }
-            return [returnData];
         }
-        finally {
-            // IMPORTANT: Toujours vider les caches à la fin, même en cas d'erreur
-            // Cela évite les fuites mémoire et les données corrompues
-            (0, services_1.clearAllCaches)();
-        }
+        return [returnData];
     }
 }
 exports.TemplateMapper = TemplateMapper;
@@ -199,217 +157,145 @@ exports.TemplateMapper = TemplateMapper;
 /**
  * Traite un item individuel.
  *
- * Cette fonction orchestre tout le processus de mapping :
+ * Architecture unifiee:
  * 1. Chargement des documents
- * 2. Extraction des tags
- * 3. Appel au LLM
- * 4. Application des tags
- * 5. Sauvegarde du résultat
- *
- * @param ctx - Le contexte d'exécution n8n
- * @param itemIndex - Index de l'item dans le lot
- * @param item - Les données de l'item
- * @returns Le résultat du traitement
+ * 2. Extraction des tags et checkboxes
+ * 3. Appel LLM unifie (tags + checkboxes en 1 appel)
+ * 4. Application des resultats
+ * 5. Sauvegarde du document
  */
 async function processItem(ctx, itemIndex, item) {
     // ============================================================
-    // ÉTAPE 1: Récupérer les paramètres
+    // ETAPE 1: Recuperer les parametres
     // ============================================================
     const params = getParameters(ctx, itemIndex);
     // ============================================================
-    // ÉTAPE 2: Charger le document cible
+    // ETAPE 2: Charger les documents
     // ============================================================
     const targetDoc = await loadTargetDocument(ctx, itemIndex, item, params.targetProp);
-    // ============================================================
-    // ÉTAPE 3: Charger le template de référence
-    // ============================================================
     const templateDoc = await loadTemplateDocument(ctx, itemIndex, item, params.refProp);
     // ============================================================
-    // ÉTAPE 4: Extraire les tags du template
+    // ETAPE 3: Extraire les tags du template
     // ============================================================
     const extractedTags = (0, shared_1.extractTagsFromTemplateXml)(templateDoc.xml);
     if (extractedTags.length === 0) {
-        throw new n8n_workflow_1.NodeOperationError(ctx.getNode(), 'Aucun tag {{TAG}} trouvé dans le template de référence. ' +
+        throw new n8n_workflow_1.NodeOperationError(ctx.getNode(), 'Aucun tag {{TAG}} trouve dans le template de reference. ' +
             'Le template doit contenir des tags au format {{NOM_DU_TAG}}.', { itemIndex });
     }
-    // Extraire les contextes des tags pour le transfer learning
     const tagContexts = (0, shared_1.extractTagContextsFromTemplate)(templateDoc.xml);
     // ============================================================
-    // ÉTAPE 4b: Extraire les checkboxes du template
+    // ETAPE 4: Extraire les checkboxes
     // ============================================================
     const templateCheckboxes = (0, shared_1.extractCheckboxes)(templateDoc.xml);
     const templateCheckboxPairs = (0, shared_1.findCheckboxPairs)(templateCheckboxes);
     const checkboxTags = (0, shared_1.generateCheckboxTags)(templateCheckboxes, templateCheckboxPairs);
-    if (params.debug && templateCheckboxes.length > 0) {
-        console.log(`\n☑️ Checkboxes template: ${templateCheckboxes.length}`);
-        console.log(`   Paires Oui/Non: ${templateCheckboxPairs.length}`);
-        console.log(`   Tags checkbox générés: ${checkboxTags.size}`);
-    }
     // ============================================================
-    // ÉTAPE 5: Analyser le document cible
+    // ETAPE 5: Analyser le document cible
     // ============================================================
     const docType = (0, shared_1.detectDocumentType)(targetDoc.xml, targetDoc.filename);
-    const targetParagraphs = (0, shared_1.extractTargetParagraphs)(targetDoc.xml);
-    // Extraire les checkboxes de la cible
+    const baseParagraphs = (0, shared_1.extractTargetParagraphs)(targetDoc.xml);
+    // Enrichir avec les infos de position de tableau (inclut les cellules vides)
+    const targetParagraphs = (0, shared_1.enrichParagraphsWithTableInfo)(targetDoc.xml, baseParagraphs);
     const targetCheckboxes = (0, shared_1.extractCheckboxes)(targetDoc.xml);
-    if (params.debug && targetCheckboxes.length > 0) {
-        console.log(`☐ Checkboxes cible: ${targetCheckboxes.length}`);
-    }
-    // Logs de débogage si activé
+    // Logs de debogage si active
     if (params.debug) {
-        logDebugInfo(targetDoc.filename, docType.type, targetParagraphs, extractedTags);
+        logDebugInfo(targetDoc.filename, docType.type, targetParagraphs, extractedTags, templateCheckboxes, targetCheckboxes);
     }
     // ============================================================
-    // ÉTAPE 6: Décider du mode de matching (segmenté ou global)
+    // ETAPE 6: Recuperer le modele LLM
     // ============================================================
-    const useSegmentation = decideSegmentationMode(params.useSegmentation, templateDoc.xml, extractedTags);
-    let matches;
-    let segmentationUsed = false;
-    let patternFallbackUsed = false;
-    let llmRawResponse;
-    if (useSegmentation) {
-        // ============================================================
-        // MODE SEGMENTÉ: Matching par segment (plus précis)
-        // ============================================================
-        if (params.debug) {
-            console.log('\n📊 Mode SEGMENTÉ activé');
-        }
-        const segmentResult = await processWithSegmentation(ctx, itemIndex, params, templateDoc.xml, targetDoc.xml, extractedTags, docType.type);
-        matches = segmentResult.matches;
-        segmentationUsed = true;
-        if (params.debug) {
-            console.log(`\n✅ Matches par segmentation: ${matches.length}`);
-        }
-        // FALLBACK SEGMENTÉ: Si aucun match, utiliser le matching par patterns
-        if (matches.length === 0) {
-            if (params.debug) {
-                console.log('\n⚠️ Segmentation n\'a retourné aucun match, fallback vers matching par patterns...');
-            }
-            matches = (0, services_1.patternBasedMatching)(tagContexts, targetParagraphs);
-            patternFallbackUsed = true;
-            if (params.debug) {
-                console.log(`✅ Fallback patterns: ${matches.length} matches trouvés`);
-            }
-        }
-    }
-    else {
-        // ============================================================
-        // MODE GLOBAL: Matching classique (document entier)
-        // ============================================================
-        if (params.debug) {
-            console.log('\n📄 Mode GLOBAL (document entier)');
-        }
-        // Générer le prompt principal
-        let prompt = (0, services_1.generateTransferLearningPrompt)(tagContexts, targetParagraphs, extractedTags, docType.type);
-        // Ajouter le prompt des checkboxes si présentes
-        if (templateCheckboxes.length > 0) {
-            const checkboxPrompt = (0, services_1.generateCheckboxFewShot)(templateCheckboxes, targetCheckboxes, templateCheckboxPairs);
-            prompt = prompt + '\n\n' + checkboxPrompt;
-            if (params.debug) {
-                console.log(`\n☑️ Prompt checkbox ajouté (${templateCheckboxes.length} checkboxes)`);
-            }
-        }
-        const llmResponse = await invokeLLM(ctx, itemIndex, params, prompt);
-        llmRawResponse = llmResponse;
-        if (params.debug) {
-            console.log(`\n🤖 Réponse IA:\n${llmResponse.substring(0, 800)}...`);
-        }
-        matches = (0, services_1.parseMatchResponse)(llmResponse);
-        // FALLBACK: Si le LLM ne retourne aucun match, utiliser le matching par patterns
-        if (matches.length === 0) {
-            if (params.debug) {
-                console.log('\n⚠️ LLM n\'a retourné aucun match, fallback vers matching par patterns...');
-            }
-            matches = (0, services_1.patternBasedMatching)(tagContexts, targetParagraphs);
-            patternFallbackUsed = true;
-            if (params.debug) {
-                console.log(`✅ Fallback patterns: ${matches.length} matches trouvés`);
-            }
-        }
+    const model = (await ctx.getInputConnectionData(n8n_workflow_1.NodeConnectionTypes.AiLanguageModel, itemIndex));
+    if (!model) {
+        throw new n8n_workflow_1.NodeOperationError(ctx.getNode(), 'Aucun modele LLM connecte. ' +
+            'Connectez un noeud LLM au port "Model" (ex: OpenAI, Claude, Gemini, etc.).', { itemIndex });
     }
     // ============================================================
-    // ÉTAPE 7: Appliquer les tags au document cible
+    // ETAPE 7: AGENT REACT AUTONOME
     // ============================================================
-    if (params.debug) {
-        console.log(`\n✅ Matches trouvés: ${matches.length}`);
-        matches.forEach((m) => console.log(`  - ${m.tag} → paragraphe ${m.targetParagraphIndex} (${m.confidence})`));
-    }
-    const { xml: taggedXml, applied, failed } = (0, services_1.applyTagsToTarget)(targetDoc.xml, matches, targetParagraphs);
+    // L'agent ReAct effectue:
+    // - Mapping des tags avec verification
+    // - Application des tags au document
+    // - Re-lecture et verification post-application
+    // - Correction automatique si necessaire
+    // - Traitement des checkboxes
+    const mappingContext = {
+        tagContexts,
+        extractedTags,
+        templateCheckboxes,
+        templateCheckboxPairs,
+        targetParagraphs,
+        targetCheckboxes,
+        targetXml: targetDoc.xml,
+        docType: docType.type,
+        debug: params.debug,
+    };
+    // Lancer l'agent ReAct autonome
+    const agentResult = await (0, services_1.runReActAgent)(model, mappingContext);
+    // L'agent a deja applique les tags et les checkboxes
+    const modifiedXml = agentResult.xml;
     // ============================================================
-    // ÉTAPE 7b: Analyser et appliquer les checkboxes avec l'IA
+    // ETAPE 8: Appliquer les checkboxes (si l'agent en a decide)
     // ============================================================
-    let modifiedXml = taggedXml;
+    let finalXml = modifiedXml;
     let checkboxApplied = [];
     let checkboxFailed = [];
-    let checkboxAnalysisResult;
-    if (targetCheckboxes.length > 0) {
-        // Récupérer le modèle LLM pour l'analyse des checkboxes
-        const model = (await ctx.getInputConnectionData(n8n_workflow_1.NodeConnectionTypes.AiLanguageModel, itemIndex));
-        if (model) {
-            // Extraire le contexte textuel du document pour l'analyse IA
-            const documentContext = (0, services_1.extractDocumentContext)(targetDoc.xml);
-            if (params.debug) {
-                console.log(`\n☑️ === ANALYSE IA DES CHECKBOXES ===`);
-                console.log(`   Checkboxes cibles: ${targetCheckboxes.length}`);
-                console.log(`   Checkboxes template: ${templateCheckboxes.length}`);
-                console.log(`   Contexte document: ${Math.round(documentContext.length / 1000)}KB`);
+    if (agentResult.checkboxDecisions.length > 0) {
+        const checkboxResult = (0, services_1.applyCheckboxDecisions)(modifiedXml, agentResult.checkboxDecisions, targetCheckboxes);
+        finalXml = checkboxResult.xml;
+        checkboxApplied = checkboxResult.applied;
+        checkboxFailed = checkboxResult.failed;
+        if (params.debug) {
+            console.log(`\n☑️ Checkboxes appliquees: ${checkboxApplied.length}`);
+            checkboxApplied.forEach((a) => console.log(`   ✓ ${a}`));
+            if (checkboxFailed.length > 0) {
+                console.log(`   ⚠️ Echecs: ${checkboxFailed.length}`);
             }
-            // Analyser les checkboxes avec l'IA
-            checkboxAnalysisResult = await (0, services_1.analyzeCheckboxesWithAI)(model, modifiedXml, templateCheckboxes, targetCheckboxes, templateCheckboxPairs, documentContext, params.debug);
-            modifiedXml = checkboxAnalysisResult.xml;
-            checkboxApplied = checkboxAnalysisResult.applied;
-            checkboxFailed = checkboxAnalysisResult.failed;
-            if (params.debug) {
-                console.log(`\n☑️ Résultat analyse IA:`);
-                console.log(`   Mode: ${checkboxAnalysisResult.mode}`);
-                console.log(`   Décisions: ${checkboxAnalysisResult.decisions.length}`);
-                console.log(`   ✅ Appliquées: ${checkboxApplied.length}`);
-                if (checkboxFailed.length > 0) {
-                    console.log(`   ⚠️ Échouées: ${checkboxFailed.length}`);
-                }
-                checkboxAnalysisResult.decisions.forEach((d) => {
-                    const arrow = d.shouldBeChecked ? '☑' : '☐';
-                    console.log(`     - idx=${d.targetIndex} "${d.label.substring(0, 30)}" → ${arrow} (${d.reason || 'N/A'})`);
-                });
-            }
-        }
-        else {
-            console.warn('⚠️ Pas de modèle LLM pour l\'analyse des checkboxes');
         }
     }
     // ============================================================
-    // ÉTAPE 8: Sauvegarder le document modifié
+    // ETAPE 9: Sauvegarder le document modifie
     // ============================================================
-    const outputBuffer = (0, shared_1.saveDocxContent)(targetDoc.zip, modifiedXml);
+    const outputBuffer = (0, shared_1.saveDocxContent)(targetDoc.zip, finalXml);
     const outputName = params.outputFilename || targetDoc.filename.replace('.docx', '_tagged.docx');
     const binaryOutput = await ctx.helpers.prepareBinaryData(outputBuffer, outputName, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
     // ============================================================
-    // ÉTAPE 9: Préparer la sortie
+    // ETAPE 10: Preparer la sortie
     // ============================================================
     const templateDataStructure = (0, shared_1.generateDataStructureFromTags)(extractedTags);
-    // Ajouter les tags de checkboxes à la structure de données
+    // Structure de donnees pour les checkboxes
     const checkboxDataStructure = {};
     for (const [tag, info] of checkboxTags) {
         checkboxDataStructure[tag] = info.checked;
     }
-    // Déterminer le mode utilisé
-    let mode = 'transfer_learning';
-    let warning;
-    if (segmentationUsed) {
-        mode = 'transfer_learning_segmented';
-    }
-    else if (patternFallbackUsed) {
-        mode = 'pattern_fallback';
-        warning = 'Le LLM n\'a retourné aucun match valide. Fallback vers matching par patterns utilisé.';
-    }
+    // Extraire les tags appliques depuis l'etat de l'agent
+    const applied = agentResult.state.expectedTags
+        .filter(t => t.status === 'verified' || t.status === 'placed')
+        .map(t => t.tag);
+    const failed = agentResult.state.expectedTags
+        .filter(t => t.status === 'failed' || t.status === 'pending')
+        .map(t => t.tag);
     return {
         json: {
-            success: true,
-            mode,
-            warning,
+            success: agentResult.success,
+            mode: agentResult.mode,
             documentType: docType.type,
             sourceFilename: targetDoc.filename,
             outputFilename: outputName,
+            // Statistiques agent
+            agent: {
+                iterations: agentResult.iterations,
+                satisfaction: agentResult.satisfaction,
+                tagsExpected: agentResult.tagsExpected,
+                tagsVerified: agentResult.tagsVerified,
+                tagsFailed: agentResult.tagsFailed,
+                issues: agentResult.state.issues.map(i => ({
+                    type: i.type,
+                    severity: i.severity,
+                    tag: i.tag,
+                    description: i.description,
+                })),
+            },
+            // Statistiques tags
             templateTagsExtracted: extractedTags.length,
             targetParagraphsAnalyzed: targetParagraphs.length,
             tagsApplied: applied.length,
@@ -418,7 +304,7 @@ async function processItem(ctx, itemIndex, item) {
             failed,
             availableTags: extractedTags.map((t) => `{{${t.tag}}}`),
             templateDataStructure,
-            // Informations sur les checkboxes (avec analyse IA)
+            // Statistiques checkboxes
             checkboxes: {
                 templateCount: templateCheckboxes.length,
                 targetCount: targetCheckboxes.length,
@@ -426,24 +312,21 @@ async function processItem(ctx, itemIndex, item) {
                 tags: checkboxDataStructure,
                 applied: checkboxApplied,
                 failed: checkboxFailed,
-                // Nouvelles informations sur l'analyse IA
-                aiAnalysisMode: (checkboxAnalysisResult === null || checkboxAnalysisResult === void 0 ? void 0 : checkboxAnalysisResult.mode) || 'none',
-                aiDecisions: (checkboxAnalysisResult === null || checkboxAnalysisResult === void 0 ? void 0 : checkboxAnalysisResult.decisions.map(d => ({
+                decisions: agentResult.checkboxDecisions.map((d) => ({
                     index: d.targetIndex,
                     label: d.label,
                     checked: d.shouldBeChecked,
                     confidence: d.confidence,
                     reason: d.reason,
-                }))) || [],
+                })),
             },
-            segmentationUsed,
-            patternFallbackUsed,
+            // Debug
             debug: params.debug
                 ? {
-                    matches,
+                    agentActions: agentResult.state.actions,
+                    expectedTags: agentResult.state.expectedTags.slice(0, 20),
+                    foundTags: agentResult.state.foundTags.slice(0, 20),
                     tagContexts: tagContexts.slice(0, 10),
-                    checkboxes: templateCheckboxes.slice(0, 10),
-                    llmRawResponse: llmRawResponse ? llmRawResponse.substring(0, 2000) : undefined,
                 }
                 : undefined,
         },
@@ -454,11 +337,7 @@ async function processItem(ctx, itemIndex, item) {
 // FONCTIONS UTILITAIRES
 // ============================================================================
 /**
- * Récupère et valide les paramètres du nœud.
- *
- * @param ctx - Le contexte d'exécution n8n
- * @param itemIndex - Index de l'item
- * @returns Les paramètres extraits
+ * Recupere et valide les parametres du noeud.
  */
 function getParameters(ctx, itemIndex) {
     const targetProp = ctx.getNodeParameter('targetDocumentProperty', itemIndex);
@@ -469,23 +348,16 @@ function getParameters(ctx, itemIndex) {
         refProp,
         debug: options.debug || false,
         outputFilename: options.outputFilename || '',
-        useSegmentation: options.useSegmentation || 'auto',
     };
 }
 /**
- * Charge le document cible depuis les données binaires.
- *
- * @param ctx - Le contexte d'exécution n8n
- * @param itemIndex - Index de l'item
- * @param item - Les données de l'item
- * @param propertyName - Nom de la propriété binaire
- * @returns Le document chargé avec ses métadonnées
+ * Charge le document cible depuis les donnees binaires.
  */
 async function loadTargetDocument(ctx, itemIndex, item, propertyName) {
     const binary = item.binary;
     if (!(binary === null || binary === void 0 ? void 0 : binary[propertyName])) {
-        throw new n8n_workflow_1.NodeOperationError(ctx.getNode(), `Document cible non trouvé dans le champ binaire "${propertyName}". ` +
-            'Vérifiez que le document DOCX est bien connecté.', { itemIndex });
+        throw new n8n_workflow_1.NodeOperationError(ctx.getNode(), `Document cible non trouve dans le champ binaire "${propertyName}". ` +
+            'Verifiez que le document DOCX est bien connecte.', { itemIndex });
     }
     const buffer = await ctx.helpers.getBinaryDataBuffer(itemIndex, propertyName);
     const filename = binary[propertyName].fileName || 'document.docx';
@@ -498,19 +370,13 @@ async function loadTargetDocument(ctx, itemIndex, item, propertyName) {
     }
 }
 /**
- * Charge le template de référence depuis les données binaires.
- *
- * @param ctx - Le contexte d'exécution n8n
- * @param itemIndex - Index de l'item
- * @param item - Les données de l'item
- * @param propertyName - Nom de la propriété binaire
- * @returns Le XML du template
+ * Charge le template de reference depuis les donnees binaires.
  */
 async function loadTemplateDocument(ctx, itemIndex, item, propertyName) {
     const binary = item.binary;
     if (!(binary === null || binary === void 0 ? void 0 : binary[propertyName])) {
-        throw new n8n_workflow_1.NodeOperationError(ctx.getNode(), `Template de référence non trouvé dans le champ binaire "${propertyName}". ` +
-            'Assurez-vous qu\'un document DOCX taggué est connecté.', { itemIndex });
+        throw new n8n_workflow_1.NodeOperationError(ctx.getNode(), `Template de reference non trouve dans le champ binaire "${propertyName}". ` +
+            'Assurez-vous qu\'un document DOCX taggue est connecte.', { itemIndex });
     }
     const buffer = await ctx.helpers.getBinaryDataBuffer(itemIndex, propertyName);
     try {
@@ -522,148 +388,16 @@ async function loadTemplateDocument(ctx, itemIndex, item, propertyName) {
     }
 }
 /**
- * Appelle le LLM connecté.
- *
- * Supporte TOUS les LLM disponibles dans n8n :
- * - OpenAI (GPT-4, GPT-4o, etc.)
- * - Anthropic (Claude 3.5 Sonnet, Claude 3 Opus, etc.)
- * - Google (Gemini Pro, Gemini Ultra, etc.)
- * - Mistral (Mistral Large, Mixtral, etc.)
- * - Ollama (modèles locaux)
- * - Groq (LLaMA, Mixtral accéléré)
- * - Azure OpenAI
- * - AWS Bedrock
- * - Et tous les autres LLM supportés par n8n
- *
- * @param ctx - Le contexte d'exécution n8n
- * @param itemIndex - Index de l'item
- * @param _params - Les paramètres du nœud (non utilisé mais gardé pour compatibilité)
- * @param prompt - Le prompt à envoyer
- * @returns La réponse du LLM
+ * Affiche les informations de debogage dans la console.
  */
-async function invokeLLM(ctx, itemIndex, _params, prompt) {
-    // Récupérer le modèle LLM connecté
-    const model = (await ctx.getInputConnectionData(n8n_workflow_1.NodeConnectionTypes.AiLanguageModel, itemIndex));
-    if (!model) {
-        throw new n8n_workflow_1.NodeOperationError(ctx.getNode(), 'Aucun modèle LLM connecté. ' +
-            'Connectez un nœud LLM au port "Model" (ex: OpenAI Chat Model, Claude, Gemini, Mistral, Ollama, etc.). ' +
-            'Ce nœud supporte TOUS les LLM disponibles dans n8n.', { itemIndex });
-    }
-    return (0, services_1.callConnectedLLM)(model, prompt);
-}
-/**
- * Affiche les informations de débogage dans la console.
- *
- * @param filename - Nom du fichier traité
- * @param docType - Type de document détecté
- * @param paragraphs - Liste des paragraphes
- * @param tags - Liste des tags extraits
- */
-function logDebugInfo(filename, docType, paragraphs, tags) {
-    console.log(`📄 Document cible: ${filename}`);
-    console.log(`📋 Type détecté: ${docType}`);
-    console.log(`📊 Paragraphes cible: ${paragraphs.length}`);
-    console.log(`🏷️ Tags extraits du template: ${tags.length}`);
-    tags.forEach((t) => console.log(`  - {{${t.tag}}} (${t.type})`));
-}
-// ============================================================================
-// FONCTIONS DE SEGMENTATION
-// ============================================================================
-/**
- * Décide si la segmentation doit être utilisée.
- *
- * @param mode - Mode de segmentation configuré (auto, always, never)
- * @param templateXml - XML du template
- * @param extractedTags - Tags extraits
- * @returns true si la segmentation doit être utilisée
- */
-function decideSegmentationMode(mode, templateXml, extractedTags) {
-    if (mode === 'always')
-        return true;
-    if (mode === 'never')
-        return false;
-    // Mode auto: utiliser la fonction de décision du service
-    return (0, services_1.shouldUseSegmentation)(templateXml, extractedTags);
-}
-/**
- * Traite le matching en utilisant la segmentation.
- *
- * Cette fonction divise les documents en segments, génère des prompts
- * ciblés pour chaque segment, et combine les résultats.
- *
- * @param ctx - Le contexte d'exécution n8n
- * @param itemIndex - Index de l'item
- * @param params - Les paramètres du nœud
- * @param templateXml - XML du template
- * @param targetXml - XML du document cible
- * @param extractedTags - Tags extraits
- * @param docType - Type de document
- * @returns Les matches combinés de tous les segments
- */
-async function processWithSegmentation(ctx, itemIndex, params, templateXml, targetXml, extractedTags, docType) {
-    // Étape 1: Préparer le plan de matching par segments
-    const plan = (0, services_1.prepareSegmentMatchingPlan)(templateXml, targetXml, extractedTags);
-    if (params.debug) {
-        (0, services_1.logMatchingPlan)(plan);
-    }
-    // Si aucun segment matché, retourner vide
-    if (plan.matchedPairs.length === 0) {
-        console.log('⚠️ Aucun segment matché, fallback vers matching global');
-        return { matches: [] };
-    }
-    // Étape 2: Pour chaque paire de segments, appeler le LLM
-    const segmentResults = new Map();
-    for (const pair of plan.matchedPairs) {
-        if (params.debug) {
-            console.log(`\n🔍 Traitement segment: ${pair.templateSegment.id}`);
-            console.log(`   Tags: ${pair.tagsToTransfer.join(', ')}`);
-        }
-        // Générer le prompt pour ce segment
-        const segmentPrompt = (0, services_1.generateSegmentPrompt)(pair, docType);
-        // Appeler le LLM
-        const llmResponse = await invokeLLM(ctx, itemIndex, params, segmentPrompt);
-        if (params.debug) {
-            console.log(`   Réponse: ${llmResponse.substring(0, 200)}...`);
-        }
-        // Parser la réponse
-        const segmentMatches = (0, services_1.parseMatchResponse)(llmResponse);
-        // Convertir les index relatifs en index globaux
-        const adjustedMatches = adjustMatchIndexes(segmentMatches, pair);
-        segmentResults.set(pair.templateSegment.id, adjustedMatches);
-        if (params.debug) {
-            console.log(`   ✓ ${adjustedMatches.length} matches trouvés`);
-        }
-    }
-    // Étape 3: Combiner les résultats
-    const allMatches = (0, services_1.combineSegmentResults)(segmentResults, plan.matchedPairs);
-    return { matches: allMatches };
-}
-/**
- * Ajuste les index des matches pour correspondre au document global.
- *
- * HISTORIQUE:
- * - Avant: Les paragraphes étaient extraits du XML du segment, donc les index
- *   étaient relatifs (0, 1, 2...) et devaient être convertis en index globaux.
- *
- * - Maintenant: extractParagraphsFromSegment filtre les paragraphes du document
- *   global et conserve leurs index GLOBAUX. Donc aucune conversion n'est nécessaire.
- *
- * Cette fonction est conservée pour compatibilité et pour permettre d'ajouter
- * des validations ou transformations futures si nécessaire.
- *
- * @param matches - Matches avec index globaux (depuis la v2.1)
- * @param pair - Paire de segments (pour référence/validation)
- * @returns Matches avec index globaux (inchangés)
- */
-function adjustMatchIndexes(matches, pair) {
-    // Validation optionnelle: vérifier que les index sont dans la plage attendue
-    const validIndexes = new Set(pair.targetParagraphs.map(p => p.index));
-    return matches.map((match) => {
-        // Log un warning si l'index retourné par le LLM n'est pas dans la liste
-        if (!validIndexes.has(match.targetParagraphIndex) && validIndexes.size > 0) {
-            console.warn(`⚠️ Index ${match.targetParagraphIndex} pour tag ${match.tag} ` +
-                `n'est pas dans la plage du segment (${[...validIndexes].join(', ')})`);
-        }
-        return { ...match };
-    });
+function logDebugInfo(filename, docType, paragraphs, tags, templateCheckboxes, targetCheckboxes) {
+    console.log('\n📄 === TEMPLATE MAPPER v3.0 ===');
+    console.log(`   Document cible: ${filename}`);
+    console.log(`   Type detecte: ${docType}`);
+    console.log(`   Paragraphes cible: ${paragraphs.length}`);
+    console.log(`   Tags template: ${tags.length}`);
+    console.log(`   Checkboxes template: ${templateCheckboxes.length}`);
+    console.log(`   Checkboxes cible: ${targetCheckboxes.length}`);
+    console.log('\n🏷️ Tags a placer:');
+    tags.forEach((t) => console.log(`   - {{${t.tag}}} (${t.type})`));
 }

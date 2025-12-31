@@ -62,6 +62,13 @@ export function applyTagsToTarget(
 	const usedTags = new Set<string>();
 	const modifiedParagraphs = new Map<number, string[]>(); // index → liste des tags déjà insérés
 
+	// === PROTECTION ANTI-DOUBLONS: Détecter les tags déjà présents dans le document ===
+	const existingTagsRegex = /\{\{([A-Z_0-9]+)\}\}/g;
+	let existingMatch;
+	while ((existingMatch = existingTagsRegex.exec(xml)) !== null) {
+		usedTags.add(existingMatch[1]); // Marquer comme déjà utilisé
+	}
+
 	// === PRÉTRAITEMENT: Regrouper les tags DEBUT/FIN pour les dates d'exercice ===
 	// Ces tags doivent être insérés ensemble dans le pattern "du {{DEBUT}} au {{FIN}}"
 	const dateTagPairs = groupDateTagPairs(matches);
@@ -190,9 +197,13 @@ interface InsertionResult {
 /**
  * Applique un tag à un paragraphe selon le type d'insertion.
  *
+ * AMÉLIORATION v4.3: Validation MINIMALE
+ * - Vérifie uniquement que le tag a été inséré
+ * - Pas de validation de structure XML (trop de faux positifs)
+ *
  * @param paragraphXml - Le XML du paragraphe
  * @param tag - Le tag à insérer (ex: "{{NOM}}")
- * @param insertionPoint - Le type d'insertion
+ * @param insertionPoint - Le type d'insertion suggéré
  * @param paragraph - Les métadonnées du paragraphe
  * @returns Le résultat de l'insertion
  */
@@ -202,28 +213,64 @@ function applyTagToParagraph(
 	insertionPoint: string,
 	paragraph: TargetParagraph
 ): InsertionResult {
-	// Cas spécial: cellule de tableau
+	// Cas spécial: cellule de tableau (toujours essayer d'abord)
 	if (paragraph.isTableCell || insertionPoint === 'table_cell') {
-		return insertTagInTableCell(paragraphXml, tag);
+		const result = insertTagInTableCell(paragraphXml, tag);
+		// Vérifier simplement que le tag est présent dans le résultat
+		if (result.success && result.newXml.includes(tag)) {
+			return result;
+		}
+		// Si échoue, continuer avec les fallbacks
 	}
 
-	// Cas normaux selon le type d'insertion
+	// Stratégie avec FALLBACK: essayer dans l'ordre de priorité
+	const strategies: Array<{ name: string; fn: () => InsertionResult }> = [];
+
+	// 1. D'abord la méthode demandée
 	switch (insertionPoint) {
 		case 'after_colon':
-			return insertTagAfterColon(paragraphXml, tag);
-
+			strategies.push({ name: 'after_colon', fn: () => insertTagAfterColon(paragraphXml, tag) });
+			break;
 		case 'replace_empty':
-			return insertTagInEmptyCell(paragraphXml, tag, paragraph.text);
-
+			strategies.push({ name: 'replace_empty', fn: () => insertTagInEmptyCell(paragraphXml, tag, paragraph.text) });
+			break;
 		case 'inline':
-			return insertTagInline(paragraphXml, tag);
-
+			strategies.push({ name: 'inline', fn: () => insertTagInline(paragraphXml, tag) });
+			break;
 		case 'checkbox':
-			return insertTagForCheckbox(paragraphXml, tag);
-
-		default:
-			return insertTagAfterColon(paragraphXml, tag);
+			strategies.push({ name: 'checkbox', fn: () => insertTagForCheckbox(paragraphXml, tag) });
+			break;
 	}
+
+	// 2. Ajouter les fallbacks dans l'ordre de priorité
+	// - Cellule de tableau (si pas déjà essayé)
+	if (insertionPoint !== 'table_cell' && !paragraph.isTableCell) {
+		strategies.push({ name: 'table_cell', fn: () => insertTagInTableCell(paragraphXml, tag) });
+	}
+	// - Après deux-points (si pas déjà essayé)
+	if (insertionPoint !== 'after_colon') {
+		strategies.push({ name: 'after_colon_fallback', fn: () => insertTagAfterColon(paragraphXml, tag) });
+	}
+	// - Cellule vide (si texte court)
+	if (insertionPoint !== 'replace_empty' && paragraph.text.trim().length < 10) {
+		strategies.push({ name: 'replace_empty_fallback', fn: () => insertTagInEmptyCell(paragraphXml, tag, paragraph.text) });
+	}
+	// - Inline en dernier recours
+	if (insertionPoint !== 'inline') {
+		strategies.push({ name: 'inline_fallback', fn: () => insertTagInline(paragraphXml, tag) });
+	}
+
+	// Essayer chaque stratégie jusqu'au succès
+	// Validation: simplement vérifier que le tag a été inséré
+	for (const strategy of strategies) {
+		const result = strategy.fn();
+		if (result.success && result.newXml.includes(tag)) {
+			return result;
+		}
+	}
+
+	// Aucune stratégie n'a fonctionné
+	return { success: false, newXml: paragraphXml };
 }
 
 // ============================================================================
@@ -271,6 +318,8 @@ function insertTagAfterColon(paragraphXml: string, tag: string): InsertionResult
 
 /**
  * Insère un tag dans une cellule vide ou presque vide.
+ *
+ * AMÉLIORATION v4.2: Stratégie simplifiée pour éviter la corruption XML
  */
 function insertTagInEmptyCell(
 	paragraphXml: string,
@@ -282,6 +331,7 @@ function insertTagInEmptyCell(
 		return { success: false, newXml: paragraphXml };
 	}
 
+	// Chercher un <w:t> existant pour le remplacer
 	const textTagRegex = /<w:t([^>]*)>([^<]*)<\/w:t>/;
 	const match = paragraphXml.match(textTagRegex);
 
@@ -291,15 +341,23 @@ function insertTagInEmptyCell(
 		return { success: true, newXml };
 	}
 
-	// Pas de <w:t>, en ajouter un dans le premier <w:r>
-	const runRegex = /(<w:r[^>]*>[\s\S]*?)(<\/w:r>)/;
-	const runMatch = paragraphXml.match(runRegex);
+	// Pas de <w:t>, insérer juste avant </w:r> s'il existe
+	const lastRunCloseIndex = paragraphXml.lastIndexOf('</w:r>');
+	if (lastRunCloseIndex !== -1) {
+		const newXml =
+			paragraphXml.substring(0, lastRunCloseIndex) +
+			`<w:t>${tag}</w:t>` +
+			paragraphXml.substring(lastRunCloseIndex);
+		return { success: true, newXml };
+	}
 
-	if (runMatch) {
-		const newXml = paragraphXml.replace(
-			runMatch[0],
-			`${runMatch[1]}<w:t>${tag}</w:t>${runMatch[2]}`
-		);
+	// Pas de <w:r>, insérer un nouveau run avant </w:p>
+	const pCloseIndex = paragraphXml.lastIndexOf('</w:p>');
+	if (pCloseIndex !== -1) {
+		const newXml =
+			paragraphXml.substring(0, pCloseIndex) +
+			`<w:r><w:t>${tag}</w:t></w:r>` +
+			paragraphXml.substring(pCloseIndex);
 		return { success: true, newXml };
 	}
 
@@ -430,13 +488,18 @@ function insertTagInTableCell(paragraphXml: string, tag: string): InsertionResul
 
 /**
  * Insère un tag dans une cellule de tableau vide.
+ *
+ * AMÉLIORATION v4.2: Gestion plus robuste des structures XML
+ * - Évite les doublons de balises <w:rPr>
+ * - Insère UNIQUEMENT le texte sans restructurer le XML
+ * - Validation de la structure avant modification
  */
 function insertTagInEmptyTableCell(
 	paragraphXml: string,
 	tag: string,
 	textMatches: Array<{ full: string; text: string; attrs: string }>
 ): InsertionResult {
-	// S'il y a déjà un <w:t>, l'utiliser
+	// S'il y a déjà un <w:t>, l'utiliser directement
 	if (textMatches.length > 0) {
 		const firstText = textMatches[0];
 		const newXml = paragraphXml.replace(
@@ -446,54 +509,47 @@ function insertTagInEmptyTableCell(
 		return { success: true, newXml };
 	}
 
-	// Vérifier s'il y a un <w:r> existant
-	const runRegex = /<w:r[^>]*>([\s\S]*?)<\/w:r>/;
-	const runMatch = paragraphXml.match(runRegex);
+	// === STRATÉGIE SIMPLIFIÉE: Insérer juste avant </w:r> ===
+	// Au lieu de restructurer tout le run, on insère <w:t> juste avant la fermeture
 
-	if (runMatch) {
-		const runContent = runMatch[1];
-
-		// Vérifier s'il y a un <w:rPr> (propriétés de run)
-		if (/<w:rPr>/.test(runContent)) {
-			// Ajouter <w:t> après </w:rPr>
-			const rPrEndIndex = runContent.indexOf('</w:rPr>');
-			if (rPrEndIndex !== -1) {
-				const newRunContent =
-					runContent.substring(0, rPrEndIndex + 8) + `<w:t>${tag}</w:t>`;
-				const runAttrs = runMatch[0].match(/<w:r([^>]*)>/)?.[1] || '';
-				const newXml = paragraphXml.replace(
-					runMatch[0],
-					`<w:r${runAttrs}>${newRunContent}</w:r>`
-				);
+	// Trouver le DERNIER </w:r> pour insérer avant
+	const lastRunCloseIndex = paragraphXml.lastIndexOf('</w:r>');
+	if (lastRunCloseIndex !== -1) {
+		// Vérifier qu'il n'y a pas déjà un <w:t> dans ce run
+		// en cherchant le <w:r> correspondant
+		const runOpenIndex = paragraphXml.lastIndexOf('<w:r', lastRunCloseIndex);
+		if (runOpenIndex !== -1) {
+			const runContent = paragraphXml.substring(runOpenIndex, lastRunCloseIndex);
+			// S'il y a déjà un <w:t>, ne pas en ajouter un autre
+			if (!runContent.includes('<w:t')) {
+				const newXml =
+					paragraphXml.substring(0, lastRunCloseIndex) +
+					`<w:t>${tag}</w:t>` +
+					paragraphXml.substring(lastRunCloseIndex);
 				return { success: true, newXml };
 			}
 		}
-
-		// Pas de <w:rPr>, ajouter <w:t> directement
-		const runAttrs = runMatch[0].match(/<w:r([^>]*)>/)?.[1] || '';
-		const newXml = paragraphXml.replace(
-			runMatch[0],
-			`<w:r${runAttrs}>${runContent}<w:t>${tag}</w:t></w:r>`
-		);
-		return { success: true, newXml };
 	}
 
-	// Pas de <w:r>, créer la structure complète
-	// Extraire la balise d'ouverture <w:p>
-	const pOpenMatch = paragraphXml.match(/<w:p[^>]*>/);
-	const pOpen = pOpenMatch ? pOpenMatch[0] : '<w:p>';
+	// === FALLBACK: Insérer un nouveau run complet ===
 
-	// Chercher <w:pPr> (propriétés du paragraphe)
-	const pPrMatch = paragraphXml.match(/<w:pPr>[\s\S]*?<\/w:pPr>/);
-	const pPr = pPrMatch ? pPrMatch[0] : '';
+	// Vérifier que le paragraphe est bien formé
+	if (!paragraphXml.includes('</w:p>')) {
+		return { success: false, newXml: paragraphXml };
+	}
 
-	// Insérer avant </w:p>
-	const closingTag = '</w:p>';
-	const beforeClose = paragraphXml.substring(
-		0,
-		paragraphXml.lastIndexOf(closingTag)
-	);
-	const newXml = `${beforeClose}<w:r><w:rPr></w:rPr><w:t>${tag}</w:t></w:r>${closingTag}`;
+	// Chercher la position juste avant </w:p> pour insérer
+	const pCloseIndex = paragraphXml.lastIndexOf('</w:p>');
+	if (pCloseIndex === -1) {
+		return { success: false, newXml: paragraphXml };
+	}
+
+	// Créer un nouveau run minimal
+	const newRun = `<w:r><w:t>${tag}</w:t></w:r>`;
+	const newXml =
+		paragraphXml.substring(0, pCloseIndex) +
+		newRun +
+		paragraphXml.substring(pCloseIndex);
 
 	return { success: true, newXml };
 }
