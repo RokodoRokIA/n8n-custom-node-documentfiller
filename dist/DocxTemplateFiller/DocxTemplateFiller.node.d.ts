@@ -1,23 +1,41 @@
 /**
- * DocxTemplateFiller - Remplissage factuel de documents DOCX
+ * ============================================================================
+ * DOCX TEMPLATE FILLER - Nœud n8n pour remplir des documents DOCX
+ * ============================================================================
  *
  * Ce nœud remplace les tags {{TAG}} dans un document DOCX par les valeurs
  * correspondantes fournies dans le JSON d'entrée.
  *
- * Logique simple et agnostique :
- * - Le document contient des placeholders au format {{NOM_DU_TAG}}
- * - Le JSON d'entrée contient les mêmes clés avec leurs valeurs
- * - Chaque {{TAG}} est remplacé par sa valeur correspondante
+ * WORKFLOW TYPIQUE :
+ * 1. TemplateMapper crée un document avec des tags {{TAG}}
+ * 2. DocxTemplateFiller remplit ces tags avec les vraies valeurs
  *
- * Ce nœud est conçu pour fonctionner avec TemplateMapper qui génère :
- * 1. Le document DOCX avec les tags insérés
- * 2. La structure de données exacte à remplir (dataStructure)
+ * FONCTIONNALITÉS :
+ * - Remplacement simple des tags {{TAG}} par des valeurs
+ * - Support des objets JSON imbriqués (entreprise.nom → ENTREPRISE_NOM)
+ * - Support des tableaux avec boucles {#ARRAY}...{/ARRAY}
+ * - Gestion des checkboxes (booléens → ☑/☐)
+ * - Validation XML pour éviter les documents corrompus
  *
- * Workflow typique :
- * TemplateMapper (crée template + structure) → DocxTemplateFiller (remplit les valeurs)
+ * ENTRÉES :
+ * - Document DOCX avec tags {{TAG}}
+ * - Données JSON à injecter
+ *
+ * SORTIE :
+ * - Document DOCX rempli
+ * - Rapport de remplacement (tags traités, manquants)
+ *
+ * @author Rokodo
+ * @version 2.0.0 (refactored)
  */
 import { IExecuteFunctions, INodeExecutionData, INodeType, INodeTypeDescription } from 'n8n-workflow';
 export declare class DocxTemplateFiller implements INodeType {
+    /**
+     * Description du nœud pour l'interface n8n.
+     */
     description: INodeTypeDescription;
+    /**
+     * Point d'entrée principal du nœud.
+     */
     execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]>;
 }

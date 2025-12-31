@@ -1,7 +1,7 @@
 {
   "name": "n8n-nodes-docx-filler",
-  "version": "5.1.0",
-  "description": "Nodes n8n pour créer et remplir des templates DOCX avec des tags {{TAG}}. TemplateMapper (insertion IA) + DocxTemplateFiller (remplissage).",
+  "version": "15.3.0",
+  "description": "Nodes n8n pour créer et remplir des templates DOCX avec des tags {{TAG}}. TemplateMapper v12 (Transfer Learning - apprend d'un template pour taguer des documents similaires) + DocxTemplateFiller (remplissage).",
   "keywords": [
     "n8n-community-node-package",
     "n8n",
@@ -49,6 +49,7 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
+    "pdf-lib": "^1.17.1",
     "pizzip": "^3.1.7"
   },
   "peerDependencies": {

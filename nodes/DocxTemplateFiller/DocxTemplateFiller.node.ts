@@ -1,20 +1,32 @@
 /**
- * DocxTemplateFiller - Remplissage factuel de documents DOCX
+ * ============================================================================
+ * DOCX TEMPLATE FILLER - Nœud n8n pour remplir des documents DOCX
+ * ============================================================================
  *
  * Ce nœud remplace les tags {{TAG}} dans un document DOCX par les valeurs
  * correspondantes fournies dans le JSON d'entrée.
  *
- * Logique simple et agnostique :
- * - Le document contient des placeholders au format {{NOM_DU_TAG}}
- * - Le JSON d'entrée contient les mêmes clés avec leurs valeurs
- * - Chaque {{TAG}} est remplacé par sa valeur correspondante
+ * WORKFLOW TYPIQUE :
+ * 1. TemplateMapper crée un document avec des tags {{TAG}}
+ * 2. DocxTemplateFiller remplit ces tags avec les vraies valeurs
  *
- * Ce nœud est conçu pour fonctionner avec TemplateMapper qui génère :
- * 1. Le document DOCX avec les tags insérés
- * 2. La structure de données exacte à remplir (dataStructure)
+ * FONCTIONNALITÉS :
+ * - Remplacement simple des tags {{TAG}} par des valeurs
+ * - Support des objets JSON imbriqués (entreprise.nom → ENTREPRISE_NOM)
+ * - Support des tableaux avec boucles {#ARRAY}...{/ARRAY}
+ * - Gestion des checkboxes (booléens → ☑/☐)
+ * - Validation XML pour éviter les documents corrompus
  *
- * Workflow typique :
- * TemplateMapper (crée template + structure) → DocxTemplateFiller (remplit les valeurs)
+ * ENTRÉES :
+ * - Document DOCX avec tags {{TAG}}
+ * - Données JSON à injecter
+ *
+ * SORTIE :
+ * - Document DOCX rempli
+ * - Rapport de remplacement (tags traités, manquants)
+ *
+ * @author Rokodo
+ * @version 2.0.0 (refactored)
  */
 
 import {
@@ -27,166 +39,66 @@ import {
 
 import PizZip from 'pizzip';
 
-// ============================================================================
-// Types
-// ============================================================================
+// Import des types et utilitaires partagés
+import { CheckboxStyle, validateXml } from '../shared';
 
-type CheckboxStyle = 'unicode' | 'text' | 'boolean';
+// Import des services
+import {
+	flattenJsonToTags,
+	adjustCheckboxStyle,
+	processLoopsInXml,
+	replaceTagsInXml,
+	extractTagsFromXml,
+} from './services';
 
 // ============================================================================
-// Utility Functions
+// INTERFACES LOCALES
 // ============================================================================
 
 /**
- * Extrait tous les tags {{TAG}} d'un document XML
- * Format supporté : {{TAG_NAME}} où TAG_NAME contient lettres majuscules, chiffres et underscores
+ * Options du nœud extraites des paramètres.
  */
-function extractTagsFromXml(xml: string): string[] {
-	const allTags = xml.match(/\{\{[A-Z_0-9]+\}\}/gi) || [];
-	return [...new Set(allTags.map((t) => t.replace(/[{}]/g, '')))];
-}
-
-/**
- * Aplatit un objet JSON imbriqué en un objet plat avec les clés en majuscules
- * { entreprise: { nom: "Test" } } → { "ENTREPRISE_NOM": "Test" }
- *
- * Supporte également les clés déjà au bon format (ex: NOM_COMMERCIAL)
- */
-function flattenJsonToTags(
-	obj: Record<string, unknown>,
-	prefix = '',
-): Record<string, string> {
-	const result: Record<string, string> = {};
-
-	for (const [key, value] of Object.entries(obj)) {
-		// Construire la clé : soit avec préfixe, soit juste la clé
-		const tagKey = prefix
-			? `${prefix}_${key}`.toUpperCase()
-			: key.toUpperCase();
-
-		if (value === null || value === undefined) {
-			continue;
-		} else if (typeof value === 'object' && !Array.isArray(value)) {
-			// Récursion pour les objets imbriqués
-			Object.assign(
-				result,
-				flattenJsonToTags(value as Record<string, unknown>, tagKey),
-			);
-		} else if (Array.isArray(value)) {
-			// Pour les tableaux, joindre les éléments
-			result[tagKey] = value
-				.map((item) =>
-					typeof item === 'object' ? JSON.stringify(item) : String(item),
-				)
-				.join(', ');
-		} else if (typeof value === 'boolean') {
-			// Les booléens sont convertis pour les checkboxes
-			result[tagKey] = value ? '☑' : '☐';
-		} else {
-			result[tagKey] = String(value);
-		}
-	}
-
-	return result;
-}
-
-/**
- * Ajuste le style des checkboxes selon la préférence utilisateur
- */
-function adjustCheckboxStyle(
-	data: Record<string, string>,
-	style: CheckboxStyle,
-): Record<string, string> {
-	if (style === 'unicode') return data;
-
-	const result = { ...data };
-	for (const key of Object.keys(result)) {
-		const val = result[key];
-		// Détecter les valeurs de checkbox (☑ ou ☐)
-		if (val === '☑' || val === '☐') {
-			if (style === 'text') {
-				result[key] = val === '☑' ? 'X' : ' ';
-			} else if (style === 'boolean') {
-				result[key] = val === '☑' ? 'true' : 'false';
-			}
-		}
-	}
-	return result;
-}
-
-/**
- * Échappe les caractères spéciaux XML
- */
-function escapeXml(value: string): string {
-	return value
-		.replace(/&/g, '&amp;')
-		.replace(/</g, '&lt;')
-		.replace(/>/g, '&gt;')
-		.replace(/"/g, '&quot;')
-		.replace(/'/g, '&apos;');
-}
-
-/**
- * Remplace les tags {{TAG}} dans le XML par leurs valeurs
- */
-function replaceTagsInXml(
-	xml: string,
-	data: Record<string, string>,
-	keepEmpty: boolean = false,
-): { xml: string; replaced: string[]; remaining: string[] } {
-	let result = xml;
-	const replaced: string[] = [];
-	const remaining: string[] = [];
-
-	// Trouver tous les tags uniques
-	const allTags = xml.match(/\{\{[A-Z_0-9]+\}\}/gi) || [];
-	const uniqueTags = [...new Set(allTags)];
-
-	for (const fullTag of uniqueTags) {
-		const tagName = fullTag.replace(/[{}]/g, '');
-		const value = data[tagName];
-
-		if (value !== undefined && value !== null && value !== '') {
-			// Remplacer le tag par sa valeur (échappée pour XML)
-			const escapedTag = fullTag.replace(/[{}]/g, '\\$&');
-			const regex = new RegExp(escapedTag, 'g');
-			const safeValue = escapeXml(String(value));
-			result = result.replace(regex, safeValue);
-			replaced.push(tagName);
-		} else {
-			remaining.push(tagName);
-		}
-	}
-
-	// Nettoyer les tags sans valeur (sauf si keepEmpty = true)
-	if (!keepEmpty) {
-		result = result.replace(/\{\{[A-Z_0-9]+\}\}/gi, '');
-	}
-
-	return { xml: result, replaced, remaining };
+interface NodeOptions {
+	checkboxStyle: CheckboxStyle;
+	outputFilename: string;
+	keepEmptyTags: boolean;
+	includeReport: boolean;
 }
 
 // ============================================================================
-// Main Node Class
+// DÉFINITION DU NŒUD
 // ============================================================================
 
 export class DocxTemplateFiller implements INodeType {
+	/**
+	 * Description du nœud pour l'interface n8n.
+	 */
 	description: INodeTypeDescription = {
+		// Identification
 		displayName: 'DOCX Template Filler',
 		name: 'docxTemplateFiller',
 		icon: 'file:docx.svg',
 		group: ['transform'],
-		version: 2,
+		version: 3,
 		subtitle: 'Remplit {{TAGS}} avec données JSON',
+
+		// Description
 		description:
-			'Remplace les tags {{TAG}} d\'un document DOCX par les valeurs du JSON d\'entrée. Fonctionne avec tout document DOCX contenant des placeholders {{TAG}}.',
+			"Remplace les tags {{TAG}} d'un document DOCX par les valeurs du JSON d'entrée. " +
+			'Fonctionne avec tout document DOCX contenant des placeholders {{TAG}}.',
+
+		// Configuration par défaut
 		defaults: {
 			name: 'DOCX Template Filler',
 		},
+
+		// Entrées/Sorties
 		inputs: [{ displayName: '', type: 'main' as const }],
 		outputs: [{ displayName: '', type: 'main' as const }],
+
+		// Paramètres
 		properties: [
-			// ==================== Document Source ====================
+			// ==================== DOCUMENT SOURCE ====================
 			{
 				displayName: 'Document Template',
 				name: 'binaryProperty',
@@ -194,10 +106,11 @@ export class DocxTemplateFiller implements INodeType {
 				default: 'data',
 				required: true,
 				description:
-					'Nom de la propriété binaire contenant le document DOCX avec les tags {{TAG}} à remplacer. Ce document est généralement produit par le nœud TemplateMapper.',
+					'Nom de la propriété binaire contenant le document DOCX avec les tags {{TAG}} à remplacer. ' +
+					'Ce document est généralement produit par le nœud TemplateMapper.',
 			},
 
-			// ==================== Données à injecter ====================
+			// ==================== SOURCE DES DONNÉES ====================
 			{
 				displayName: 'Source des Données',
 				name: 'dataSource',
@@ -207,7 +120,8 @@ export class DocxTemplateFiller implements INodeType {
 						name: 'JSON Complet (Item Courant)',
 						value: 'fullJson',
 						description:
-							'Utilise tout le JSON de l\'item courant. Les clés sont converties en tags (ex: entreprise.nom → ENTREPRISE_NOM).',
+							"Utilise tout le JSON de l'item courant. " +
+							'Les clés sont converties en tags (ex: entreprise.nom → ENTREPRISE_NOM).',
 					},
 					{
 						name: 'Champ Spécifique',
@@ -217,7 +131,7 @@ export class DocxTemplateFiller implements INodeType {
 					},
 				],
 				default: 'fullJson',
-				description: 'D\'où proviennent les données à injecter dans le document.',
+				description: "D'où proviennent les données à injecter dans le document.",
 			},
 			{
 				displayName: 'Champ de Données',
@@ -228,11 +142,13 @@ export class DocxTemplateFiller implements INodeType {
 					show: { dataSource: ['specificField'] },
 				},
 				description:
-					'Nom du champ JSON contenant les données de mapping. Ce champ doit contenir un objet avec les tags comme clés (ex: { "NOM_COMMERCIAL": "Ma Société", "SIRET": "12345678901234" }).',
+					'Nom du champ JSON contenant les données de mapping. ' +
+					'Ce champ doit contenir un objet avec les tags comme clés ' +
+					'(ex: { "NOM_COMMERCIAL": "Ma Société", "SIRET": "12345678901234" }).',
 				placeholder: 'ex: templateData, mappingData',
 			},
 
-			// ==================== Options ====================
+			// ==================== OPTIONS ====================
 			{
 				displayName: 'Options',
 				name: 'options',
@@ -280,7 +196,8 @@ export class DocxTemplateFiller implements INodeType {
 						type: 'boolean',
 						default: false,
 						description:
-							'Si activé, les tags {{TAG}} sans valeur correspondante restent visibles dans le document. Sinon, ils sont supprimés.',
+							'Si activé, les tags {{TAG}} sans valeur correspondante restent visibles dans le document. ' +
+							'Sinon, ils sont supprimés.',
 					},
 					{
 						displayName: 'Inclure le Rapport de Mapping',
@@ -295,173 +212,21 @@ export class DocxTemplateFiller implements INodeType {
 		],
 	};
 
+	// ============================================================================
+	// EXÉCUTION DU NŒUD
+	// ============================================================================
+
+	/**
+	 * Point d'entrée principal du nœud.
+	 */
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
 		const items = this.getInputData();
 		const returnData: INodeExecutionData[] = [];
 
-		for (let i = 0; i < items.length; i++) {
+		for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
 			try {
-				// ============================================================
-				// Récupérer les paramètres
-				// ============================================================
-
-				const binaryProperty = this.getNodeParameter(
-					'binaryProperty',
-					i,
-				) as string;
-				const dataSource = this.getNodeParameter('dataSource', i) as string;
-				const options = this.getNodeParameter('options', i) as {
-					checkboxStyle?: CheckboxStyle;
-					outputFilename?: string;
-					keepEmptyTags?: boolean;
-					includeReport?: boolean;
-				};
-
-				const checkboxStyle = options.checkboxStyle || 'unicode';
-				const keepEmptyTags = options.keepEmptyTags || false;
-				const includeReport = options.includeReport !== false;
-
-				// ============================================================
-				// Charger le document DOCX
-				// ============================================================
-
-				const binaryData = items[i].binary;
-				if (!binaryData || !binaryData[binaryProperty]) {
-					throw new NodeOperationError(
-						this.getNode(),
-						`Aucun document trouvé dans la propriété binaire "${binaryProperty}". Assurez-vous qu'un document DOCX est connecté en entrée.`,
-						{ itemIndex: i },
-					);
-				}
-
-				const documentBuffer = await this.helpers.getBinaryDataBuffer(
-					i,
-					binaryProperty,
-				);
-				const originalFilename =
-					binaryData[binaryProperty].fileName || 'document.docx';
-
-				// ============================================================
-				// Charger les données de mapping
-				// ============================================================
-
-				let rawData: Record<string, unknown>;
-
-				if (dataSource === 'specificField') {
-					const dataField = this.getNodeParameter('dataField', i) as string;
-					rawData = items[i].json[dataField] as Record<string, unknown>;
-					if (!rawData || typeof rawData !== 'object') {
-						throw new NodeOperationError(
-							this.getNode(),
-							`Le champ "${dataField}" n'existe pas ou n'est pas un objet valide. Vérifiez que ce champ contient les données de mapping (ex: { "NOM_COMMERCIAL": "...", "SIRET": "..." }).`,
-							{ itemIndex: i },
-						);
-					}
-				} else {
-					// fullJson - utiliser tout le JSON de l'item
-					rawData = items[i].json as Record<string, unknown>;
-				}
-
-				// ============================================================
-				// Ouvrir le document et extraire les tags
-				// ============================================================
-
-				let zip: PizZip;
-				try {
-					zip = new PizZip(documentBuffer);
-				} catch {
-					throw new NodeOperationError(
-						this.getNode(),
-						'Le fichier fourni n\'est pas un document DOCX valide (archive ZIP corrompue ou format incorrect).',
-						{ itemIndex: i },
-					);
-				}
-
-				const documentXmlFile = zip.file('word/document.xml');
-				if (!documentXmlFile) {
-					throw new NodeOperationError(
-						this.getNode(),
-						'Le fichier DOCX ne contient pas de document.xml. Vérifiez que le fichier est un document Word valide.',
-						{ itemIndex: i },
-					);
-				}
-
-				let xml = documentXmlFile.asText();
-				const documentTags = extractTagsFromXml(xml);
-
-				// ============================================================
-				// Préparer les données de mapping
-				// ============================================================
-
-				// Aplatir le JSON en tags (ENTREPRISE_NOM, etc.)
-				let templateData = flattenJsonToTags(rawData);
-
-				// Ajuster le style des checkboxes
-				templateData = adjustCheckboxStyle(templateData, checkboxStyle);
-
-				// ============================================================
-				// Remplacer les tags dans le document
-				// ============================================================
-
-				const { xml: filledXml, replaced, remaining } = replaceTagsInXml(
-					xml,
-					templateData,
-					keepEmptyTags,
-				);
-
-				zip.file('word/document.xml', filledXml);
-
-				const outputBuffer = zip.generate({
-					type: 'nodebuffer',
-					compression: 'DEFLATE',
-				});
-
-				// ============================================================
-				// Préparer la sortie
-				// ============================================================
-
-				const finalFilename =
-					options.outputFilename ||
-					originalFilename.replace('.docx', '_FILLED.docx');
-
-				const binaryOutput = await this.helpers.prepareBinaryData(
-					outputBuffer,
-					finalFilename,
-					'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-				);
-
-				// Construire le JSON de sortie
-				const jsonOutput: {
-					success: boolean;
-					filename: string;
-					originalFilename: string;
-					report?: {
-						tagsInDocument: number;
-						tagsReplaced: number;
-						tagsRemaining: number;
-						replacedTags: string[];
-						remainingTags: string[];
-					};
-				} = {
-					success: true,
-					filename: finalFilename,
-					originalFilename,
-				};
-
-				if (includeReport) {
-					jsonOutput.report = {
-						tagsInDocument: documentTags.length,
-						tagsReplaced: replaced.length,
-						tagsRemaining: remaining.length,
-						replacedTags: replaced,
-						remainingTags: remaining,
-					};
-				}
-
-				returnData.push({
-					json: jsonOutput,
-					binary: { data: binaryOutput },
-				});
+				const result = await processItem(this, itemIndex, items[itemIndex]);
+				returnData.push(result);
 			} catch (error) {
 				if (this.continueOnFail()) {
 					returnData.push({
@@ -478,4 +243,261 @@ export class DocxTemplateFiller implements INodeType {
 
 		return [returnData];
 	}
+}
+
+// ============================================================================
+// FONCTIONS DE TRAITEMENT
+// ============================================================================
+
+/**
+ * Traite un item individuel.
+ *
+ * @param ctx - Le contexte d'exécution n8n
+ * @param itemIndex - Index de l'item
+ * @param item - Les données de l'item
+ * @returns Le résultat du traitement
+ */
+async function processItem(
+	ctx: IExecuteFunctions,
+	itemIndex: number,
+	item: INodeExecutionData
+): Promise<INodeExecutionData> {
+	// ============================================================
+	// ÉTAPE 1: Récupérer les paramètres
+	// ============================================================
+
+	const binaryProperty = ctx.getNodeParameter('binaryProperty', itemIndex) as string;
+	const dataSource = ctx.getNodeParameter('dataSource', itemIndex) as string;
+	const options = extractOptions(ctx, itemIndex);
+
+	// ============================================================
+	// ÉTAPE 2: Charger le document DOCX
+	// ============================================================
+
+	const { zip, xml: originalXml, filename } = await loadDocument(
+		ctx,
+		itemIndex,
+		item,
+		binaryProperty
+	);
+
+	// Extraire les tags du document pour le rapport
+	const documentTags = extractTagsFromXml(originalXml);
+
+	// ============================================================
+	// ÉTAPE 3: Valider le XML d'entrée
+	// ============================================================
+
+	const inputValidation = validateXml(originalXml);
+	if (!inputValidation.valid) {
+		throw new NodeOperationError(
+			ctx.getNode(),
+			`Le document DOCX d'entrée contient du XML invalide: ${inputValidation.error}. ` +
+				'Le document peut être corrompu.',
+			{ itemIndex }
+		);
+	}
+
+	// ============================================================
+	// ÉTAPE 4: Charger les données de mapping
+	// ============================================================
+
+	const rawData = loadMappingData(ctx, itemIndex, item, dataSource);
+
+	// ============================================================
+	// ÉTAPE 5: Transformer les données
+	// ============================================================
+
+	// Aplatir le JSON en tags (ENTREPRISE_NOM, etc.)
+	let templateData = flattenJsonToTags(rawData);
+
+	// Ajuster le style des checkboxes
+	templateData = adjustCheckboxStyle(templateData, options.checkboxStyle);
+
+	// ============================================================
+	// ÉTAPE 6: Traiter les boucles
+	// ============================================================
+
+	const xmlWithLoopsProcessed = processLoopsInXml(originalXml, rawData);
+
+	// Valider après traitement des boucles
+	const loopValidation = validateXml(xmlWithLoopsProcessed);
+	if (!loopValidation.valid) {
+		throw new NodeOperationError(
+			ctx.getNode(),
+			`Le traitement des boucles a corrompu le document: ${loopValidation.error}. ` +
+				'Opération annulée.',
+			{ itemIndex }
+		);
+	}
+
+	// ============================================================
+	// ÉTAPE 7: Remplacer les tags
+	// ============================================================
+
+	const { xml: filledXml, replaced, remaining } = replaceTagsInXml(
+		xmlWithLoopsProcessed,
+		templateData,
+		options.keepEmptyTags
+	);
+
+	// Validation finale
+	const finalValidation = validateXml(filledXml);
+	if (!finalValidation.valid) {
+		throw new NodeOperationError(
+			ctx.getNode(),
+			`Le remplacement des tags a corrompu le document: ${finalValidation.error}. ` +
+				'Opération annulée.',
+			{ itemIndex }
+		);
+	}
+
+	// ============================================================
+	// ÉTAPE 8: Sauvegarder le document
+	// ============================================================
+
+	zip.file('word/document.xml', filledXml);
+
+	const outputBuffer = zip.generate({
+		type: 'nodebuffer',
+		compression: 'DEFLATE',
+	});
+
+	const finalFilename =
+		options.outputFilename || filename.replace('.docx', '_FILLED.docx');
+
+	const binaryOutput = await ctx.helpers.prepareBinaryData(
+		outputBuffer,
+		finalFilename,
+		'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+	);
+
+	// ============================================================
+	// ÉTAPE 9: Préparer la sortie
+	// ============================================================
+
+	const jsonOutput = {
+		success: true,
+		filename: finalFilename,
+		originalFilename: filename,
+		report: options.includeReport
+			? {
+					tagsInDocument: documentTags.length,
+					tagsReplaced: replaced.length,
+					tagsRemaining: remaining.length,
+					replacedTags: replaced,
+					remainingTags: remaining,
+			  }
+			: undefined,
+	};
+
+	return {
+		json: jsonOutput,
+		binary: { data: binaryOutput },
+	};
+}
+
+// ============================================================================
+// FONCTIONS UTILITAIRES
+// ============================================================================
+
+/**
+ * Extrait les options du nœud.
+ */
+function extractOptions(ctx: IExecuteFunctions, itemIndex: number): NodeOptions {
+	const options = ctx.getNodeParameter('options', itemIndex) as {
+		checkboxStyle?: CheckboxStyle;
+		outputFilename?: string;
+		keepEmptyTags?: boolean;
+		includeReport?: boolean;
+	};
+
+	return {
+		checkboxStyle: options.checkboxStyle || 'unicode',
+		outputFilename: options.outputFilename || '',
+		keepEmptyTags: options.keepEmptyTags || false,
+		includeReport: options.includeReport !== false,
+	};
+}
+
+/**
+ * Charge le document DOCX depuis les données binaires.
+ */
+async function loadDocument(
+	ctx: IExecuteFunctions,
+	itemIndex: number,
+	item: INodeExecutionData,
+	binaryProperty: string
+): Promise<{ zip: PizZip; xml: string; filename: string }> {
+	const binaryData = item.binary;
+
+	if (!binaryData || !binaryData[binaryProperty]) {
+		throw new NodeOperationError(
+			ctx.getNode(),
+			`Aucun document trouvé dans la propriété binaire "${binaryProperty}". ` +
+				"Assurez-vous qu'un document DOCX est connecté en entrée.",
+			{ itemIndex }
+		);
+	}
+
+	const documentBuffer = await ctx.helpers.getBinaryDataBuffer(
+		itemIndex,
+		binaryProperty
+	);
+	const filename = binaryData[binaryProperty].fileName || 'document.docx';
+
+	let zip: PizZip;
+	try {
+		zip = new PizZip(documentBuffer);
+	} catch {
+		throw new NodeOperationError(
+			ctx.getNode(),
+			"Le fichier fourni n'est pas un document DOCX valide " +
+				'(archive ZIP corrompue ou format incorrect).',
+			{ itemIndex }
+		);
+	}
+
+	const documentXmlFile = zip.file('word/document.xml');
+	if (!documentXmlFile) {
+		throw new NodeOperationError(
+			ctx.getNode(),
+			'Le fichier DOCX ne contient pas de document.xml. ' +
+				'Vérifiez que le fichier est un document Word valide.',
+			{ itemIndex }
+		);
+	}
+
+	const xml = documentXmlFile.asText();
+	return { zip, xml, filename };
+}
+
+/**
+ * Charge les données de mapping depuis l'item.
+ */
+function loadMappingData(
+	ctx: IExecuteFunctions,
+	itemIndex: number,
+	item: INodeExecutionData,
+	dataSource: string
+): Record<string, unknown> {
+	if (dataSource === 'specificField') {
+		const dataField = ctx.getNodeParameter('dataField', itemIndex) as string;
+		const data = item.json[dataField] as Record<string, unknown>;
+
+		if (!data || typeof data !== 'object') {
+			throw new NodeOperationError(
+				ctx.getNode(),
+				`Le champ "${dataField}" n'existe pas ou n'est pas un objet valide. ` +
+					'Vérifiez que ce champ contient les données de mapping ' +
+					'(ex: { "NOM_COMMERCIAL": "...", "SIRET": "..." }).',
+				{ itemIndex }
+			);
+		}
+
+		return data;
+	}
+
+	// fullJson - utiliser tout le JSON de l'item
+	return item.json as Record<string, unknown>;
 }
